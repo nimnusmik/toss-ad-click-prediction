@@ -1,0 +1,92 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.env
+.venv
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+.cache/
+coverage.xml
+htmlcov/
+.hypothesis/
+
+# Type checkers / linters
+.mypy_cache/
+.pytype/
+.pyre/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.history/
+
+# Logs
+logs/
+*.log
+
+# Local data (keep only sample submission tracked)
+data/*
+!data/sample_submission.csv
+!data/README.md
+!data/.gitkeep
+
+# Models / artifacts
+models/*
+!models/README.md
+!models/.gitkeep
+
+# Outputs (keep submission folder itself tracked)
+output/*
+!output/submission/
+output/submission/*
+!output/submission/.gitkeep
+!output/README.md
+
+# Parquet/large artifacts outside data (just in case)
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.pkl
+*.joblib
+
+# Environment files
+*.env.local
+*.env.development.local
+*.env.test.local
+*.env.production.local

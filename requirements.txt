@@ -1,0 +1,8 @@
+pandas
+scikit-learn
+tqdm
+torch
+seaborn
+pyarrow
+fastparquet
+polars

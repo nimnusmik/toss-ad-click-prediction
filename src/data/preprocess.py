@@ -28,8 +28,8 @@ def simple_preprocess(train_df, test_df):
     간단한 전처리 함수 - 기본적인 정리만 수행
     """
     # feat_e_3 컬럼 제거
-    train_clean = train_df.drop('feat_e_3').drop_nulls()
-    test_clean = test_df.drop('feat_e_3').drop_nulls()
+    train_clean = train_df.drop('feat_e_3') 
+    test_clean = test_df.drop('feat_e_3') 
     
     # 데이터 타입 변환
     int_cols = ['gender','age_group','inventory_id','day_of_week','hour']
@@ -47,8 +47,13 @@ def simple_preprocess(train_df, test_df):
 
 train, test = simple_preprocess(all_train, test)
 
+train_clicked = train['clicked']
+test_ID = test['ID'] 
 
-
+#%%
+test.head(3)
+#%%
+train.head(3)
 
 #%%
 # 특성공학 한번에 처리 하는 함수 만들기
@@ -66,6 +71,9 @@ def add_cyclic_features(df):
         # 복합 사이클릭 (168시간 주기)
         (2 * np.pi * ((pl.col('day_of_week') - 1) * 24 + pl.col('hour')) / 168).sin().alias('week_hour_sin'),
         (2 * np.pi * ((pl.col('day_of_week') - 1) * 24 + pl.col('hour')) / 168).cos().alias('week_hour_cos')
+        
+        # is_weekend 변수 추가
+        ((pl.col("day_of_week") >= 6).cast(pl.Int32)).alias("is_weekend")
     ]).drop(['day_of_week','hour'])
 
 # cyclic 피처 추가
@@ -78,11 +86,8 @@ print(f"테스트 데이터: {test_with_cyclic.shape}")
 
 
 # %%
-train_with_cyclic.head(3)
-print(train_with_cyclic.columns)
-
-
-
+#train_with_cyclic.head(3)
+#print(train_with_cyclic.columns)
 
 
 # %%
@@ -104,24 +109,19 @@ def process_seq_column(df):
         
         # 고유값 대략 개수 (','로 구분된 값들의 수)
         pl.col('seq').str.count_matches(',').add(1).alias('seq_unique_approx')
-    ]).drop('seq')  # 원본 seq 컬럼 제거
+    ])
 
 # seq 처리 적용
 X_train_processed = process_seq_column(train_with_cyclic)
-X_test_processed = process_seq_column(train_with_cyclic)
+X_test_processed = process_seq_column(test_with_cyclic)
 
 print("seq 컬럼 처리 완료!")
 print(f"X_train 최종 크기: {X_train_processed.shape}")
 print(f"X_test 최종 크기: {X_test_processed.shape}")
 
-
-
-
-
-
-
-
-
+# %%
+#X_train_processed.head(3)
+X_test_processed.head(3)
 #%%
 # 상관관계 상위 20개 특성
 correlation_features = [
@@ -142,12 +142,12 @@ lightgbm_features = [
 selected_columns = [
     'age_group', 
     'inventory_id',
-    #'seq', # 얘는 일단 추가
-    'seq_length', 'seq_first' #'seq_last, 'seq_101_count', 'seq_unique_approx'
+    'seq', # 얘는 일단 추가
+    'seq_length', 'seq_first', #'seq_last, 'seq_101_count', 'seq_unique_approx'
     #'day_of_week', 'hour',
     'dow_sin', 'dow_cos', 'hour_sin', 'hour_cos', 'week_hour_sin', 'week_hour_cos',
 
-    'feat_b_4', 'feat_c_8', 'feat_d_3', 'feat_d_4', 'feat_e_1', #'feat_e_3'는 없잖아;
+    'feat_b_4', 'feat_c_8', 'feat_d_3', 'feat_d_4', 'feat_e_1', #'feat_e_3'는 결측치 많음;
 
     'history_a_1', 'history_a_2', 'history_a_3', 'history_a_5', 
 
@@ -157,18 +157,66 @@ selected_columns = [
     'l_feat_1', 'l_feat_2', 'l_feat_4', 'l_feat_5', 'l_feat_6', 'l_feat_7', 'l_feat_9',
     'l_feat_10', 'l_feat_12', 'l_feat_14', 'l_feat_15',
 
-    'clicked',
+    #'clicked',
 ]
 
 # 선택된 특성들만 추출
 X_train_selected =  X_train_processed[selected_columns]
 X_test_selected = X_test_processed[selected_columns]
-X_test_selected = X_test_processed.drop('clicked')
+
 
 print("선택된 특성으로 데이터 준비 완료!")
 print(f"훈련 데이터 크기: {X_train_selected.shape}")
 print(f"테스트 데이터 크기: {X_test_selected.shape}")
 
+
+# Mutual Information (MI) 기반 상호 작용 변수 추가, 10피처 쌍 선정.
+# age_group × gender
+# age_group × hour
+# gender × hour
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #%%
-X_train_selected.head(3)
+X_test_selected.head(3)
 # %%
+train_final = pl.concat([
+    X_train_selected,                   # 선택된 특성들
+    train_clicked.to_frame()            # 타겟 변수   
+], how="horizontal")
+
+test_final = pl.concat([
+    test_ID.to_frame(),               # ID 컬럼 (이미 저장해둠)
+    X_test_selected                   # 선택된 특성들
+], how="horizontal")
+
+
+print(train_final.shape, test_final.shape)
+# %%
+train_final.head(3)
+# %%
+test_final.head(3)
+# %%
+# 모델 저장
+train_final.write_parquet("../../data/processed/train_processed_2.parquet")
+test_final.write_parquet("../../data/processed/test_processed_2.parquet")
+# %%
+
+
+
+
+
+
+

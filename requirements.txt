@@ -6,3 +6,7 @@ seaborn
 pyarrow
 fastparquet
 polars
+nvtabular
+cudf
+cupy
+xgboost

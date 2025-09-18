@@ -41,9 +41,11 @@ def main():
         batch_size=CFG['BATCH_SIZE'],
         epochs=CFG['EPOCHS'],
         lr=CFG['LEARNING_RATE'],
-        device=device
+        device=device,
+        alpha = 0.7, # WLL 중시
+        margin = 1.0 # Ranking margin
     )
-    
+
     # GPU 메모리 정리
     torch.cuda.empty_cache()
     
@@ -71,7 +73,7 @@ def main():
     submission = create_submission(
         test_preds=test_preds,
         sample_submission_path='../data/sample_submission.csv',
-        output_path=f"{CFG['OUTPUT_PATH']}dcn_submission.csv"
+        output_path=f"{CFG['OUTPUT_PATH']}dcn_submission2.csv"
     )
     
     print(f"\n4. Pipeline completed successfully!")

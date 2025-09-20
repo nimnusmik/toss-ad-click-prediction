@@ -73,7 +73,7 @@ def main():
     submission = create_submission(
         test_preds=test_preds,
         sample_submission_path='../data/sample_submission.csv',
-        output_path=f"{CFG['OUTPUT_PATH']}dcn_submission2.csv"
+        output_path=f"{CFG['OUTPUT_PATH']}dcn_submission5.csv"
     )
     
     print(f"\n4. Pipeline completed successfully!")

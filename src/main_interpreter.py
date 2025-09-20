@@ -49,7 +49,7 @@ def main():
         seq_col=seq_col,
         target_col=target_col,
         batch_size=CFG['BATCH_SIZE'],
-        epochs=CFG['EPOCHS'],
+        epochs=20,
         lr=CFG['LEARNING_RATE'],
         device=device
     )
@@ -78,19 +78,27 @@ def main():
     
     # 제출 파일 생성
     os.makedirs(CFG['OUTPUT_PATH'], exist_ok=True)
-    submission = create_submission(
-        test_preds=test_preds,
-        sample_submission_path='../data/sample_submission.csv',
-        output_path=f"{CFG['OUTPUT_PATH']}dcn_submission.csv"
-    )
+    #submission = create_submission(
+    #    test_preds=test_preds,
+    #    sample_submission_path='../data/sample_submission.csv',
+    #    output_path=f"{CFG['OUTPUT_PATH']}dcn_submission.csv"
+    #)
     
     print(f"\n4. Pipeline completed successfully!")
-    print(f"   - Submission file: {CFG['OUTPUT_PATH']}dcn_submission.csv")
+    #print(f"   - Submission file: {CFG['OUTPUT_PATH']}dcn_submission.csv")
     print(f"   - Predictions shape: {test_preds.shape}")
     print(f"   - Prediction range: [{test_preds.min():.4f}, {test_preds.max():.4f}]")
     
     return model, test_preds, submission, train_df, feature_cols, seq_col, target_col
 
+
+    
+#%%
+model, predictions, submission, train_df, feature_cols, seq_col, target_col = main()
+
+
+#%%
+# 간단한 모델 분석 실행
 def simple_model_analysis(model, train_df, feature_cols, seq_col, target_col):
     """간단한 모델 해석 분석"""
     print("\n" + "=" * 80)
@@ -344,38 +352,28 @@ def simple_model_analysis(model, train_df, feature_cols, seq_col, target_col):
         'top_features': [f[0] for f in feature_importance[:5]]
     }
 
+print(f"\n🤔 모델이 어떻게 판단하고 있는지 간단히 분석해보겠습니다...")
+
+analysis_results = simple_model_analysis(
+    model=model,
+    train_df=train_df,
+    feature_cols=feature_cols,
+    seq_col=seq_col,
+    target_col=target_col
+)
+
+if analysis_results:
+    print(f"\n🎉 분석 완료!")
+    print(f"   📊 Final Score: {analysis_results['final_score']:.4f}")
+    print(f"   🎯 최적 임계값: {analysis_results['best_threshold']:.3f}")
+    print(f"   🏆 Top 5 중요 피처: {', '.join(analysis_results['top_features'])}")
     
-#%%
-if __name__ == "__main__":
-    # 메인 파이프라인 실행
-    model, predictions, submission, train_df, feature_cols, seq_col, target_col = main()
-    
-    # 간단한 모델 분석 실행
-    print(f"\n🤔 모델이 어떻게 판단하고 있는지 간단히 분석해보겠습니다...")
-    
-    try:
-        analysis_results = simple_model_analysis(
-            model=model,
-            train_df=train_df,
-            feature_cols=feature_cols,
-            seq_col=seq_col,
-            target_col=target_col
-        )
-        
-        if analysis_results:
-            print(f"\n🎉 분석 완료!")
-            print(f"   📊 Final Score: {analysis_results['final_score']:.4f}")
-            print(f"   🎯 최적 임계값: {analysis_results['best_threshold']:.3f}")
-            print(f"   🏆 Top 5 중요 피처: {', '.join(analysis_results['top_features'])}")
-            
-        else:
-            print(f"\n⚠️ 분석을 완료하지 못했지만 모델 훈련과 제출 파일은 생성되었습니다.")
-            
-    except Exception as e:
-        print(f"\n❌ 분석 실행 실패: {e}")
-        print(f"   모델 훈련과 제출 파일 생성은 정상 완료되었습니다.")
-    
-    print(f"\n🏁 전체 파이프라인 완료!")
-    print(f"   📁 제출 파일: {CFG['OUTPUT_PATH']}dcn_submission.csv")
-    print(f"   💾 모델 파일: {CFG['MODEL_PATH']}")
+else:
+    print(f"\n⚠️ 분석을 완료하지 못했지만 모델 훈련과 제출 파일은 생성되었습니다.")
+
+print(f"\n🏁 전체 파이프라인 완료!")
+print(f"   📁 제출 파일: {CFG['OUTPUT_PATH']}dcn_submission.csv")
+print(f"   💾 모델 파일: {CFG['MODEL_PATH']}")
+
+
 # %%

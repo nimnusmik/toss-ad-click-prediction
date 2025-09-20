@@ -8,5 +8,4 @@ fastparquet
 polars
 nvtabular
 cudf
-cupy
-xgboost
+

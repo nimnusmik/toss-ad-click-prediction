@@ -20,6 +20,7 @@ def weighted_binary_crossentropy(y_true, y_pred, weights):
     weighted_bce = (bce * weights).mean()
     return weighted_bce
 
+
 def pairwise_ranking_loss(y_true, y_pred, margin=1.0):
     """
     AP 최적화를 위한 pairwise ranking loss
@@ -44,6 +45,7 @@ def pairwise_ranking_loss(y_true, y_pred, margin=1.0):
     hinge_loss = F.relu(margin - diff).mean()
     
     return hinge_loss
+
 
 def combined_loss(y_true, y_pred, alpha=0.7, margin=1.0):
     """

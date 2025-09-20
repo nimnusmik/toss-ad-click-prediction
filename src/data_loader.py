@@ -8,8 +8,8 @@ import torch.nn as nn
 def load_data(data_path):
     """데이터 로딩 및 전처리"""
     # 데이터 로드
-    all_train = pl.read_parquet(f"{data_path}train_processed.parquet")
-    test = pl.read_parquet(f"{data_path}test_processed.parquet")
+    all_train = pl.read_parquet(f"{data_path}train_processed_2.parquet")
+    test = pl.read_parquet(f"{data_path}test_processed_2.parquet")
     
     print("Train shape:", all_train.shape)
     print("Test shape:", test.shape)
@@ -19,7 +19,7 @@ def load_data(data_path):
     
     # clicked == 0 데이터에서 샘플링
     clicked_0 = all_train.filter(pl.col('clicked') == 0).sample(
-        n=len(clicked_1) * 2,  # 샘플 개수 지정
+        n=len(clicked_1) * 2,  
         seed=42  # random_state 대신 seed 사용
     )
     
@@ -96,7 +96,6 @@ class ClickDataset(Dataset):
 
     def __getitem__(self, idx):
         x = torch.tensor(self.X[idx], dtype=torch.float)
-
         # 전체 시퀀스 사용 (빈 시퀀스만 방어)
         s = self.seq_strings[idx]
         if s:

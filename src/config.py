@@ -16,8 +16,8 @@ def seed_everything(seed):
 # 설정값들
 CFG = {
     'BATCH_SIZE': 4096,
-    #'EPOCHS': 1,
     'EPOCHS': 20,
+    #'EPOCHS': 100,
     'LEARNING_RATE': 1e-3,
     'SEED': 42,
     'DATA_PATH': '../data/processed/',

@@ -12,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from config import CFG, device
 from data_loader import load_data, get_feature_columns
-from train import train_dcn_model
+from train import train_dcn_kfold, load_best_kfold_model
 from inference import load_model, predict, create_submission
 
 def main():
@@ -33,19 +33,26 @@ def main():
     print(f"   - Learning rate: {CFG['LEARNING_RATE']}")
     print(f"   - Device: {device}")
     
-    model = train_dcn_model(
+    kfold_results = train_dcn_kfold(
         train_df=train_df,
         feature_cols=feature_cols,
         seq_col=seq_col,
-        target_col=target_col,
-        batch_size=CFG['BATCH_SIZE'],
-        epochs=CFG['EPOCHS'],
-        lr=CFG['LEARNING_RATE'],
-        device=device,
-        alpha = 0.7, # WLL 중시
-        margin = 1.0 # Ranking margin
+        target_col='clicked',
+        n_folds=5,  # 불균형 데이터에서는 3-5가 적당
+        batch_size=512,
+        epochs=10,
+        lr=1e-3,
+        device="cuda",
+        alpha=0.7,
+        margin=1.0,
+        random_state=42
     )
 
+    best_model = load_best_kfold_model(
+        feature_cols=feature_cols,
+        best_fold_path=kfold_results['best_fold']['model_path'],
+        device="cuda"
+    )
     # GPU 메모리 정리
     torch.cuda.empty_cache()
     
@@ -73,7 +80,7 @@ def main():
     submission = create_submission(
         test_preds=test_preds,
         sample_submission_path='../data/sample_submission.csv',
-        output_path=f"{CFG['OUTPUT_PATH']}dcn_submission5.csv"
+        output_path=f"{CFG['OUTPUT_PATH']}dcn_submission0921.csv"
     )
     
     print(f"\n4. Pipeline completed successfully!")

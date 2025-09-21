@@ -91,3 +91,13 @@ output/submission/*
 *.env.development.local
 *.env.test.local
 *.env.production.local
+
+# Codex CLI 바이너리
+codex
+codex-*
+*.tar.gz
+
+# Node.js
+node_modules/
+npm-debug.log*
+

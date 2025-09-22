@@ -15,82 +15,74 @@ from data_loader import load_data, get_feature_columns
 from train import train_dcn_kfold, load_best_kfold_model
 from inference import predict, create_submission
 
-def main():
-    """메인 실행 함수"""
-    print("=" * 80)
-    print("DCN Click Prediction Pipeline")
-    print("=" * 80)
-    
-    # 1. 데이터 로딩 및 전처리
-    print("\n1. Loading and preprocessing data...")
-    train_df, test_df = load_data(CFG['DATA_PATH'])
-    feature_cols, seq_col, target_col = get_feature_columns(train_df)
-    
-    # 2. 모델 훈련
-    print(f"\n2. Training DCN model...")
-    print(f"   - Batch size: {CFG['BATCH_SIZE']}")
-    print(f"   - Epochs: {CFG['EPOCHS']}")
-    print(f"   - Learning rate: {CFG['LEARNING_RATE']}")
-    print(f"   - Device: {device}")
-    
-    kfold_results = train_dcn_kfold(
-        train_df=train_df,
-        feature_cols=feature_cols,
-        seq_col=seq_col,
-        target_col='clicked',
-        n_folds=5,  # 불균형 데이터에서는 3-5가 적당
-        batch_size=512,
-        epochs=10,
-        lr=1e-3,
-        device=device,
-        alpha=0.7,
-        margin=1.0,
-        random_state=42,
-        checkpoint_dir=CFG['CHECKPOINT_DIR'],
-        log_dir=CFG['LOG_DIR']
-    )
 
-    best_model_path = kfold_results.get('best_model_path') or kfold_results['best_fold']['model_path']
-    model = load_best_kfold_model(
-        feature_cols=feature_cols,
-        best_fold_path=best_model_path,
-        device=device
-    )
-    # GPU 메모리 정리
-    torch.cuda.empty_cache()
-    
-    # 3. 추론 및 제출 파일 생성
-    print(f"\n3. Making predictions and creating submission...")
-    
-    # 테스트 데이터를 pandas로 변환
-    test_pd = test_df.to_pandas()
-    
-    # 예측 수행
-    test_preds = predict(
-        model=model,
-        test_df=test_pd,
-        feature_cols=feature_cols,
-        seq_col=seq_col,
-        batch_size=CFG['BATCH_SIZE'],
-        device=device
-    )
-    
-    # 제출 파일 생성
-    os.makedirs(CFG['OUTPUT_PATH'], exist_ok=True)
-    submission_filename = "dcn_submission0921.csv"
-    submission_path = os.path.join(CFG['OUTPUT_PATH'], submission_filename)
-    submission = create_submission(
-        test_preds=test_preds,
-        sample_submission_path='../data/sample_submission.csv',
-        output_path=submission_path
-    )
-    
-    print(f"\n4. Pipeline completed successfully!")
-    print(f"   - Submission file: {submission_path}")
-    print(f"   - Predictions shape: {test_preds.shape}")
-    print(f"   - Prediction range: [{test_preds.min():.4f}, {test_preds.max():.4f}]")
-    
-    return model, test_preds, submission
+# 1. 데이터 로딩 및 전처리
+print("\n1. Loading and preprocessing data...")
+train_df, test_df = load_data(CFG['DATA_PATH'])
+feature_cols, seq_col, target_col = get_feature_columns(train_df)
 
-if __name__ == "__main__":
-    model, predictions, submission = main()
+# 2. 모델 훈련
+print(f"\n2. Training DCN model...")
+print(f"   - Batch size: {CFG['BATCH_SIZE']}")
+print(f"   - Epochs: {CFG['EPOCHS']}")
+print(f"   - Learning rate: {CFG['LEARNING_RATE']}")
+print(f"   - Device: {device}")
+
+kfold_results = train_dcn_kfold(
+    train_df=train_df,
+    feature_cols=feature_cols,
+    seq_col=seq_col,
+    target_col='clicked',
+    n_folds=3,  # 불균형 데이터에서는 3-5가 적당
+    batch_size=512,
+    epochs=10,
+    lr=1e-3,
+    device=device,
+    alpha=0.7,
+    margin=1.0,
+    random_state=42,
+    checkpoint_dir=CFG['CHECKPOINT_DIR'],
+    log_dir=CFG['LOG_DIR']
+)
+
+best_model_path = kfold_results.get('best_model_path') or kfold_results['best_fold']['model_path']
+model = load_best_kfold_model(
+    feature_cols=feature_cols,
+    best_fold_path=best_model_path,
+    device=device
+)
+# GPU 메모리 정리
+torch.cuda.empty_cache()
+
+# 3. 추론 및 제출 파일 생성
+print(f"\n3. Making predictions and creating submission...")
+
+# 테스트 데이터를 pandas로 변환
+test_pd = test_df.to_pandas()
+
+# 예측 수행
+test_preds = predict(
+    model=model,
+    test_df=test_pd,
+    feature_cols=feature_cols,
+    seq_col=seq_col,
+    batch_size=CFG['BATCH_SIZE'],
+    device=device
+)
+
+# 제출 파일 생성
+os.makedirs(CFG['OUTPUT_PATH'], exist_ok=True)
+submission_filename = "dcn_submission0922.csv"
+submission_path = os.path.join(CFG['OUTPUT_PATH'], submission_filename)
+submission = create_submission(
+    test_preds=test_preds,
+    sample_submission_path='../data/sample_submission.csv',
+    output_path=submission_path
+)
+
+print(f"\n4. Pipeline completed successfully!")
+print(f"   - Submission file: {submission_path}")
+print(f"   - Predictions shape: {test_preds.shape}")
+print(f"   - Prediction range: [{test_preds.min():.4f}, {test_preds.max():.4f}]")
+
+#return model, test_preds, submission

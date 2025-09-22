@@ -179,9 +179,68 @@ def process_seq_column(df):
         pl.col('seq').str.count_matches(',').add(1).log().max()).alias('seq_length_log_norm')
     ])
 
+def process_seq_column2(df, chunk_size: int = 200_000):
+    """seq 컬럼을 청크 단위로 전처리해 메모리 사용량을 안정화"""
+    if 'seq' not in df.columns:
+        return df
+
+    # 전체 로그 최댓값 계산 (정규화 스케일)
+    seq_log_max = 0.0
+    for chunk in df.iter_slices(chunk_size):
+        chunk_log_max = (
+            chunk.select(
+                pl.col('seq')
+                .str.count_matches(',')
+                .add(1)
+                .cast(pl.Float64)
+                .log()
+                .max()
+                .alias('seq_log_max')
+            )['seq_log_max'][0]
+        )
+        if chunk_log_max is not None and np.isfinite(chunk_log_max):
+            seq_log_max = max(seq_log_max, chunk_log_max)
+
+    if not np.isfinite(seq_log_max) or seq_log_max <= 0:
+        seq_log_max = 1.0
+
+    processed_chunks = []
+
+    # 청크 단위로 특성 생성
+    for chunk in df.iter_slices(chunk_size):
+        chunk_processed = (
+            chunk.with_columns(
+                pl.col('seq').str.count_matches(',').add(1).alias('seq_length'),
+            )
+            .with_columns([
+                (pl.col('seq_length') / 100.0).alias('seq_length_norm'),
+                pl.col('seq')
+                .str.split(',')
+                .list.first()
+                .cast(pl.Int32, strict=False)
+                .alias('seq_first'),
+                pl.col('seq')
+                .str.split(',')
+                .list.last()
+                .cast(pl.Int32, strict=False)
+                .alias('seq_last'),
+                (pl.col('seq_length') >= 5000).cast(pl.Int32).alias('seq_high_ctr_flag'),
+                pl.when(pl.col('seq_length') <= 1)
+                .then(0.0)
+                .otherwise(
+                    pl.col('seq_length').cast(pl.Float64).log() / seq_log_max
+                )
+                .alias('seq_length_log_norm'),
+            ])
+        )
+
+        processed_chunks.append(chunk_processed)
+
+    return pl.concat(processed_chunks, how='vertical', rechunk=True)
+
 # seq 처리 적용
-X_train_processed = process_seq_column(train_with_cyclic)
-X_test_processed = process_seq_column(test_with_cyclic)
+X_train_processed = process_seq_column2(train_with_cyclic)
+X_test_processed = process_seq_column2(test_with_cyclic)
 
 print("seq 컬럼 처리 완료!")
 print(f"X_train 최종 크기: {X_train_processed.shape}")
@@ -311,7 +370,8 @@ def add_dcn_feature_engineering(df):
     ])
 
 
-
+X_train_normalized = add_dcn_feature_engineering(X_train_selected)
+X_test_normalized = add_dcn_feature_engineering(X_test_selected)
 
 
 
@@ -340,7 +400,8 @@ print(train_final.shape, test_final.shape)
 test_final.head(3)
 
 # %%
-print(train_final.columns, test_final.columns)
+print(train_final.columns) 
+print(test_final.columns)
 # %%
 # 모델 저장
 train_final.write_parquet("../../data/processed/train_processed_3.parquet")

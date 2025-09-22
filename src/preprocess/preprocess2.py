@@ -78,6 +78,8 @@ def add_cyclic_features(df):
         
         # is_weekend 변수 추가
         ((pl.col("day_of_week") == 6) | (pl.col("day_of_week") == 7)).cast(pl.Int32).alias("is_weekend")
+
+        # 
     ])#.drop(['day_of_week','hour'])
 
 # cyclic 피처 추가

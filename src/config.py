@@ -22,7 +22,9 @@ CFG = {
     'SEED': 42,
     'DATA_PATH': '../data/processed/',
     'OUTPUT_PATH': '../data/output/',
-    'MODEL_PATH': 'best_dcn_model.pth'
+    'CHECKPOINT_DIR': '../models/',
+    'LOG_DIR': '../logs/',
+    'MODEL_PATH': '../models/best_dcn_model.pth'
 }
 
 # 디바이스 설정

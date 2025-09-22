@@ -13,7 +13,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import CFG, device
 from data_loader import load_data, get_feature_columns
 from train import train_dcn_kfold, load_best_kfold_model
-from inference import load_model, predict, create_submission
+from inference import predict, create_submission
 
 def main():
     """메인 실행 함수"""
@@ -42,16 +42,19 @@ def main():
         batch_size=512,
         epochs=10,
         lr=1e-3,
-        device="cuda",
+        device=device,
         alpha=0.7,
         margin=1.0,
-        random_state=42
+        random_state=42,
+        checkpoint_dir=CFG['CHECKPOINT_DIR'],
+        log_dir=CFG['LOG_DIR']
     )
 
-    best_model = load_best_kfold_model(
+    best_model_path = kfold_results.get('best_model_path') or kfold_results['best_fold']['model_path']
+    model = load_best_kfold_model(
         feature_cols=feature_cols,
-        best_fold_path=kfold_results['best_fold']['model_path'],
-        device="cuda"
+        best_fold_path=best_model_path,
+        device=device
     )
     # GPU 메모리 정리
     torch.cuda.empty_cache()
@@ -61,9 +64,6 @@ def main():
     
     # 테스트 데이터를 pandas로 변환
     test_pd = test_df.to_pandas()
-    
-    # 모델 로드 (훈련된 모델 사용)
-    model = load_model(CFG['MODEL_PATH'], len(feature_cols), device)
     
     # 예측 수행
     test_preds = predict(
@@ -77,14 +77,16 @@ def main():
     
     # 제출 파일 생성
     os.makedirs(CFG['OUTPUT_PATH'], exist_ok=True)
+    submission_filename = "dcn_submission0921.csv"
+    submission_path = os.path.join(CFG['OUTPUT_PATH'], submission_filename)
     submission = create_submission(
         test_preds=test_preds,
         sample_submission_path='../data/sample_submission.csv',
-        output_path=f"{CFG['OUTPUT_PATH']}dcn_submission0921.csv"
+        output_path=submission_path
     )
     
     print(f"\n4. Pipeline completed successfully!")
-    print(f"   - Submission file: {CFG['OUTPUT_PATH']}dcn_submission.csv")
+    print(f"   - Submission file: {submission_path}")
     print(f"   - Predictions shape: {test_preds.shape}")
     print(f"   - Prediction range: [{test_preds.min():.4f}, {test_preds.max():.4f}]")
     

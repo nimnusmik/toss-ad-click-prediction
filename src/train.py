@@ -1,3 +1,6 @@
+import copy
+import os
+import shutil
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,6 +9,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from sklearn.model_selection import StratifiedKFold  
 from sklearn.model_selection import train_test_split
+import pandas as pd
 import numpy as np
 
 from model import DCNModel
@@ -51,8 +55,10 @@ def combined_loss(y_true, y_pred, alpha=0.7, margin=1.0):
     total_loss = alpha * wll + (1 - alpha) * ranking
     return total_loss
 
+
 def train_single_fold(fold_num, train_idx, val_idx, train_df, feature_cols, seq_col, target_col,
-                     batch_size=512, epochs=10, lr=1e-3, device="cuda", alpha=0.7, margin=1.0):
+                     batch_size=512, epochs=10, lr=1e-3, device="cuda", alpha=0.7, margin=1.0,
+                     checkpoint_dir=None):
     """단일 fold 훈련 함수"""
     
     print(f"\n{'='*20} FOLD {fold_num} {'='*20}")
@@ -94,7 +100,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, feature_cols, seq_
         optimizer, mode='max', patience=3, factor=0.5
     )
     
-    best_val_score = 0
+    best_val_score = float("-inf")
     best_model_state = None
     patience_counter = 0
     early_stopping_patience = 5
@@ -170,7 +176,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, feature_cols, seq_
         # 베스트 모델 저장
         if val_metrics['Final_Score'] > best_val_score:
             best_val_score = val_metrics['Final_Score']
-            best_model_state = model.state_dict().copy()
+            best_model_state = copy.deepcopy(model.state_dict())
             patience_counter = 0
             print(f"  ★ New best score for fold {fold_num}: {best_val_score:.4f}")
         else:
@@ -192,7 +198,12 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, feature_cols, seq_
             break
     
     # 베스트 모델 저장
-    fold_model_path = f'best_dcn_model_fold_{fold_num}.pth'
+    if checkpoint_dir is None:
+        raise ValueError("checkpoint_dir must be provided when saving model checkpoints")
+
+    fold_model_path = os.path.join(checkpoint_dir, f'best_dcn_model_fold_{fold_num}.pth')
+    if best_model_state is None:
+        raise RuntimeError("best_model_state is None; ensure at least one validation score was recorded")
     torch.save(best_model_state, fold_model_path)
     
     return {
@@ -204,7 +215,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, feature_cols, seq_
 
 def train_dcn_kfold(train_df, feature_cols, seq_col, target_col, 
                    n_folds=5, batch_size=512, epochs=10, lr=1e-3, device="cuda", 
-                   alpha=0.7, margin=1.0, random_state=42):
+                   alpha=0.7, margin=1.0, random_state=42, checkpoint_dir=None, log_dir=None):
     """
     K-Fold Cross Validation으로 DCN 모델 훈련
     
@@ -219,6 +230,13 @@ def train_dcn_kfold(train_df, feature_cols, seq_col, target_col,
     print(f"⚖️  Combined Loss - Alpha: {alpha}, Margin: {margin}")
     print("-" * 80)
     
+    if checkpoint_dir is None:
+        checkpoint_dir = './'
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    if log_dir is not None:
+        os.makedirs(log_dir, exist_ok=True)
+
     # StratifiedKFold로 불균형 데이터 처리
     skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
     
@@ -241,7 +259,8 @@ def train_dcn_kfold(train_df, feature_cols, seq_col, target_col,
             lr=lr,
             device=device,
             alpha=alpha,
-            margin=margin
+            margin=margin,
+            checkpoint_dir=checkpoint_dir
         )
         
         fold_results.append(fold_result)
@@ -274,15 +293,22 @@ def train_dcn_kfold(train_df, feature_cols, seq_col, target_col,
     
     # 결과를 DataFrame으로 저장
     results_df = pd.DataFrame(all_fold_metrics)
-    results_df.to_csv('kfold_training_results.csv', index=False)
-    print(f"📄 Detailed results saved to: kfold_training_results.csv")
-    
+    results_csv_path = os.path.join(log_dir, 'kfold_training_results.csv') if log_dir else 'kfold_training_results.csv'
+    results_df.to_csv(results_csv_path, index=False)
+    print(f"📄 Detailed results saved to: {results_csv_path}")
+
+    consolidated_model_path = None
+    if checkpoint_dir is not None:
+        consolidated_model_path = os.path.join(checkpoint_dir, 'best_dcn_model.pth')
+        shutil.copy2(best_fold_result['model_path'], consolidated_model_path)
+
     return {
         'fold_results': fold_results,
         'mean_score': mean_score,
         'std_score': std_score,
         'best_fold': best_fold_result,
-        'all_metrics': results_df
+        'all_metrics': results_df,
+        'best_model_path': consolidated_model_path or best_fold_result['model_path']
     }
 
 def load_best_kfold_model(feature_cols, best_fold_path, device="cuda"):
@@ -298,5 +324,3 @@ def load_best_kfold_model(feature_cols, best_fold_path, device="cuda"):
     
     model.load_state_dict(torch.load(best_fold_path, map_location=device))
     return model
-
-

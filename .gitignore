@@ -103,3 +103,4 @@ npm-debug.log*
 
 #
 toss-ml-venv/
+wandb/

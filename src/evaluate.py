@@ -1,5 +1,6 @@
 import numpy as np
-from sklearn.metrics import average_precision_score, log_loss
+from sklearn.metrics import average_precision_score, log_loss, roc_auc_score
+
 
 def calculate_metrics(y_true, y_pred_proba):
     """
@@ -26,6 +27,12 @@ def calculate_metrics(y_true, y_pred_proba):
     
     # 가중 로그 손실 계산
     wll_score = log_loss(y_true, y_pred_proba, sample_weight=sample_weights)
+
+    # ROC-AUC 계산 (단일 클래스 예외 처리)
+    try:
+        auc_score = roc_auc_score(y_true, y_pred_proba)
+    except ValueError:
+        auc_score = float("nan")
     
     # 최종 점수: AP와 WLL의 평균 (대회 규칙에 따라)
     final_score = (ap_score + (1 - wll_score)) / 2
@@ -33,5 +40,6 @@ def calculate_metrics(y_true, y_pred_proba):
     return {
         'AP': ap_score,
         'WLL': wll_score, 
-        'Final_Score': final_score
+        'Final_Score': final_score,
+        'AUC': auc_score,
     }

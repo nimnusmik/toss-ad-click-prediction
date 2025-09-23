@@ -28,6 +28,24 @@ print(f"   - Epochs: {CFG['EPOCHS']}")
 print(f"   - Learning rate: {CFG['LEARNING_RATE']}")
 print(f"   - Device: {device}")
 
+wandb_kwargs = {}
+if CFG.get('USE_WANDB', False):
+    wandb_kwargs = {
+        'use_wandb': True,
+        'wandb_project': CFG.get('WANDB_PROJECT'),
+        'wandb_run_name': CFG.get('WANDB_RUN_NAME'),
+        'wandb_log_every': CFG.get('WANDB_LOG_EVERY', 1),
+        'wandb_viz_every': CFG.get('WANDB_VIZ_EVERY', 5),
+        'confusion_threshold': CFG.get('WANDB_THRESHOLD', 0.5),
+        'wandb_config': {
+            'model': 'dcn',
+            'device': device,
+            'dataset_rows': len(train_df),
+            'numeric_features': len(numeric_cols),
+            'categorical_features': len(categorical_info.get('columns', [])),
+        },
+    }
+
 kfold_results = train_dcn_kfold(
     train_df=train_df,
     numeric_cols=numeric_cols,
@@ -43,7 +61,8 @@ kfold_results = train_dcn_kfold(
     margin=1.5, #1.0 -> 1.5 
     random_state=42,
     checkpoint_dir=CFG['CHECKPOINT_DIR'],
-    log_dir=CFG['LOG_DIR']
+    log_dir=CFG['LOG_DIR'],
+    **wandb_kwargs,
 )
 
 best_model_path = kfold_results.get('best_model_path') or kfold_results['best_fold']['model_path']

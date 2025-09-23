@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Weights & Biases sweep utilities for DCN CTR training."""
+from __future__ import annotations
+
+import argparse
+from typing import Optional
+
+import wandb
+
+from config import CFG, device
+from data_loader import get_feature_columns, load_data
+from train import train_dcn_kfold
+
+SWEEP_CONFIG = {
+    'method': 'grid',
+    'metric': {'name': 'val_final', 'goal': 'maximize'},
+    'parameters': {
+        'alpha': {'values': [0.5, 0.6, 0.7, 0.8]},
+        'margin': {'values': [0.5, 1.0, 1.5]},
+        'learning_rate': {'values': [0.001, 0.0005]},
+        'batch_size': {'values': [512, 1024]},
+    },
+}
+
+
+def sweep_train(config: Optional[dict] = None) -> None:
+    """Entry point for wandb agent runs."""
+    with wandb.init(config=config) as run:
+        cfg = wandb.config
+
+        train_df, _ = load_data(CFG['DATA_PATH'])
+        numeric_cols, categorical_info, seq_col, target_col = get_feature_columns(train_df)
+
+        train_dcn_kfold(
+            train_df=train_df,
+            numeric_cols=numeric_cols,
+            categorical_info=categorical_info,
+            seq_col=seq_col,
+            target_col=target_col,
+            n_folds=3,
+            batch_size=cfg.batch_size,
+            epochs=CFG['EPOCHS'],
+            lr=cfg.learning_rate,
+            device=device,
+            alpha=cfg.alpha,
+            margin=cfg.margin,
+            random_state=CFG['SEED'],
+            checkpoint_dir=CFG['CHECKPOINT_DIR'],
+            log_dir=CFG['LOG_DIR'],
+            wandb_run=run,
+            wandb_log_every=CFG.get('WANDB_LOG_EVERY', 1),
+            wandb_viz_every=CFG.get('WANDB_VIZ_EVERY', 5),
+            confusion_threshold=CFG.get('WANDB_THRESHOLD', 0.5),
+        )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run or register a W&B sweep for the DCN trainer.")
+    parser.add_argument(
+        '--create',
+        action='store_true',
+        help='Create the sweep on the W&B backend and print its ID',
+    )
+    args = parser.parse_args()
+
+    if args.create:
+        sweep_id = wandb.sweep(SWEEP_CONFIG, project=CFG.get('WANDB_PROJECT'))
+        print(f"Created sweep: {sweep_id}")
+        return
+
+    sweep_train()
+
+
+if __name__ == '__main__':
+    main()

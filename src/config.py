@@ -24,7 +24,13 @@ CFG = {
     'OUTPUT_PATH': '../data/output/',
     'CHECKPOINT_DIR': '../models/',
     'LOG_DIR': '../logs/',
-    'MODEL_PATH': '../models/best_dcn_model.pth'
+    'MODEL_PATH': '../models/best_dcn_model.pth',
+    'USE_WANDB': True,
+    'WANDB_PROJECT': 'ctr-dcn-monitoring',
+    'WANDB_RUN_NAME': None,
+    'WANDB_LOG_EVERY': 1,
+    'WANDB_VIZ_EVERY': 5,
+    'WANDB_THRESHOLD': 0.5,
 }
 
 # 디바이스 설정

@@ -55,125 +55,167 @@ def combined_loss(y_true, y_pred, alpha=0.7, margin=1.0):
     total_loss = alpha * wll + (1 - alpha) * ranking
     return total_loss
 
-
-def train_single_fold(fold_num, train_idx, val_idx, train_df, feature_cols, seq_col, target_col,
+def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_col, target_col,
                      batch_size=512, epochs=10, lr=1e-3, device="cuda", alpha=0.7, margin=1.0,
-                     checkpoint_dir=None):
+                     checkpoint_dir=None, categorical_info=None):
     """단일 fold 훈련 함수"""
-    
+
+    categorical_info = categorical_info or {
+        'columns': [],
+        'maps': {},
+        'cardinalities': [],
+        'embedding_dims': [],
+        'unique_counts': [],
+    }
+
     print(f"\n{'='*20} FOLD {fold_num} {'='*20}")
-    
-    # 1. fold별 데이터 분할
+
     tr_df = train_df.iloc[train_idx].reset_index(drop=True)
     va_df = train_df.iloc[val_idx].reset_index(drop=True)
-    
-    # 클릭률 확인 (불균형 데이터 검증)
+
     train_click_rate = tr_df[target_col].mean()
     val_click_rate = va_df[target_col].mean()
     print(f"Train: {len(tr_df)} samples, Click rate: {train_click_rate:.4f}")
     print(f"Val: {len(va_df)} samples, Click rate: {val_click_rate:.4f}")
-    
-    # 클릭률 차이가 크면 경고
+
     if abs(train_click_rate - val_click_rate) > 0.005:
         print(f"⚠️  Warning: Click rate difference: {abs(train_click_rate - val_click_rate):.4f}")
-    
-    # 2. Dataset과 DataLoader 생성
-    train_dataset = ClickDataset(tr_df, feature_cols, seq_col, target_col, has_target=True)
-    val_dataset = ClickDataset(va_df, feature_cols, seq_col, target_col, has_target=True)
-    
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn_train)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn_train)
-    
-    # 3. 모델 초기화
-    d_features = len(feature_cols)
+
+    train_dataset = ClickDataset(
+        tr_df,
+        numeric_cols,
+        seq_col,
+        target_col,
+        categorical_info=categorical_info,
+        has_target=True,
+    )
+    val_dataset = ClickDataset(
+        va_df,
+        numeric_cols,
+        seq_col,
+        target_col,
+        categorical_info=categorical_info,
+        has_target=True,
+    )
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collate_fn_train,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_fn_train,
+    )
+
+    num_numeric_features = len(numeric_cols)
+    cat_cardinalities = categorical_info.get('cardinalities', [])
+    embedding_dims = categorical_info.get('embedding_dims', [])
+
     model = DCNModel(
-        d_features=d_features,
+        num_numeric_features=num_numeric_features,
+        categorical_cardinalities=cat_cardinalities,
+        embedding_dims=embedding_dims,
         lstm_hidden=64,
         cross_layers=3,
         deep_hidden=[512, 256, 128],
-        dropout=0.3
+        dropout=0.3,
+        embedding_dropout=0.05,
     ).to(device)
-    
-    # 4. 옵티마이저와 스케줄러
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', patience=3, factor=0.5
+        optimizer, mode='max', patience=3, factor=0.5, verbose=True
     )
-    
+
     best_val_score = float("-inf")
     best_model_state = None
     patience_counter = 0
     early_stopping_patience = 5
-    
+
     fold_results = []
-    
-    # 5. 훈련 루프
+
     for epoch in range(1, epochs + 1):
-        # Training
         model.train()
         train_loss = 0.0
         train_preds, train_targets = [], []
-        
+
         train_pbar = tqdm(train_loader, desc=f"Fold {fold_num} Train Epoch {epoch}")
-        for xs, seqs, seq_lens, ys in train_pbar:
-            xs, seqs, seq_lens, ys = xs.to(device), seqs.to(device), seq_lens.to(device), ys.to(device)
-            
+        for x_num, x_cat, seqs, seq_lens, ys in train_pbar:
+            x_num = x_num.to(device)
+            seqs = seqs.to(device)
+            seq_lens = seq_lens.to(device)
+            ys = ys.to(device)
+            x_cat = x_cat.to(device) if x_cat is not None else None
+
             optimizer.zero_grad()
-            logits = model(xs, seqs, seq_lens)
-            
+            logits = model(x_num, x_cat, seqs, seq_lens)
+
             try:
                 loss = combined_loss(ys.float(), logits.float(), alpha=alpha, margin=margin)
             except Exception as e:
                 print(f"Combined loss failed: {e}, using BCE")
                 loss = F.binary_cross_entropy_with_logits(logits, ys.float())
-            
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            
+
             train_loss += loss.item() * len(ys)
-            
+
             with torch.no_grad():
                 train_preds.extend(torch.sigmoid(logits).cpu().numpy())
                 train_targets.extend(ys.cpu().numpy())
-            
+
             train_pbar.set_postfix({'Loss': f"{loss.item():.4f}"})
-        
+
         train_loss /= len(train_dataset)
-        
-        # Validation
+
         model.eval()
         val_loss = 0.0
         val_preds, val_targets = [], []
-        
+
         with torch.no_grad():
-            for xs, seqs, seq_lens, ys in tqdm(val_loader, desc=f"Fold {fold_num} Val Epoch {epoch}"):
-                xs, seqs, seq_lens, ys = xs.to(device), seqs.to(device), seq_lens.to(device), ys.to(device)
-                
-                logits = model(xs, seqs, seq_lens)
-                
+            for x_num, x_cat, seqs, seq_lens, ys in tqdm(
+                val_loader, desc=f"Fold {fold_num} Val Epoch {epoch}"
+            ):
+                x_num = x_num.to(device)
+                seqs = seqs.to(device)
+                seq_lens = seq_lens.to(device)
+                ys = ys.to(device)
+                x_cat = x_cat.to(device) if x_cat is not None else None
+
+                logits = model(x_num, x_cat, seqs, seq_lens)
+
                 try:
                     loss = combined_loss(ys.float(), logits.float(), alpha=alpha, margin=margin)
-                except:
+                except Exception:
                     loss = F.binary_cross_entropy_with_logits(logits, ys.float())
-                
+
                 val_loss += loss.item() * len(ys)
                 val_preds.extend(torch.sigmoid(logits).cpu().numpy())
                 val_targets.extend(ys.cpu().numpy())
-        
+
         val_loss /= len(val_dataset)
-        
-        # 평가지표 계산
+
         train_metrics = calculate_metrics(np.array(train_targets), np.array(train_preds))
         val_metrics = calculate_metrics(np.array(val_targets), np.array(val_preds))
-        
+
         scheduler.step(val_metrics['Final_Score'])
-        
+
         print(f"[Fold {fold_num} Epoch {epoch}]")
-        print(f"  Train - Loss: {train_loss:.4f}, AP: {train_metrics['AP']:.4f}, WLL: {train_metrics['WLL']:.4f}, Final: {train_metrics['Final_Score']:.4f}")
-        print(f"  Val   - Loss: {val_loss:.4f}, AP: {val_metrics['AP']:.4f}, WLL: {val_metrics['WLL']:.4f}, Final: {val_metrics['Final_Score']:.4f}")
-        
-        # 베스트 모델 저장
+        print(
+            f"  Train - Loss: {train_loss:.4f}, AP: {train_metrics['AP']:.4f}, "
+            f"WLL: {train_metrics['WLL']:.4f}, Final: {train_metrics['Final_Score']:.4f}"
+        )
+        print(
+            f"  Val   - Loss: {val_loss:.4f}, AP: {val_metrics['AP']:.4f}, "
+            f"WLL: {val_metrics['WLL']:.4f}, Final: {val_metrics['Final_Score']:.4f}"
+        )
+
         if val_metrics['Final_Score'] > best_val_score:
             best_val_score = val_metrics['Final_Score']
             best_model_state = copy.deepcopy(model.state_dict())
@@ -181,8 +223,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, feature_cols, seq_
             print(f"  ★ New best score for fold {fold_num}: {best_val_score:.4f}")
         else:
             patience_counter += 1
-        
-        # epoch별 결과 저장
+
         fold_results.append({
             'fold': fold_num,
             'epoch': epoch,
@@ -191,13 +232,11 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, feature_cols, seq_
             'val_ap': val_metrics['AP'],
             'val_wll': val_metrics['WLL']
         })
-        
-        # 조기 종료
+
         if patience_counter >= early_stopping_patience:
             print(f"  Early stopping at epoch {epoch}")
             break
-    
-    # 베스트 모델 저장
+
     if checkpoint_dir is None:
         raise ValueError("checkpoint_dir must be provided when saving model checkpoints")
 
@@ -205,7 +244,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, feature_cols, seq_
     if best_model_state is None:
         raise RuntimeError("best_model_state is None; ensure at least one validation score was recorded")
     torch.save(best_model_state, fold_model_path)
-    
+
     return {
         'fold': fold_num,
         'best_score': best_val_score,
@@ -213,7 +252,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, feature_cols, seq_
         'fold_results': fold_results
     }
 
-def train_dcn_kfold(train_df, feature_cols, seq_col, target_col, 
+def train_dcn_kfold(train_df, numeric_cols, categorical_info, seq_col, target_col, 
                    n_folds=5, batch_size=512, epochs=10, lr=1e-3, device="cuda", 
                    alpha=0.7, margin=1.0, random_state=42, checkpoint_dir=None, log_dir=None):
     """
@@ -251,7 +290,7 @@ def train_dcn_kfold(train_df, feature_cols, seq_col, target_col,
             train_idx=train_idx,
             val_idx=val_idx,
             train_df=train_df,
-            feature_cols=feature_cols,
+            numeric_cols=numeric_cols,
             seq_col=seq_col,
             target_col=target_col,
             batch_size=batch_size,
@@ -260,7 +299,8 @@ def train_dcn_kfold(train_df, feature_cols, seq_col, target_col,
             device=device,
             alpha=alpha,
             margin=margin,
-            checkpoint_dir=checkpoint_dir
+            checkpoint_dir=checkpoint_dir,
+            categorical_info=categorical_info,
         )
         
         fold_results.append(fold_result)
@@ -311,16 +351,26 @@ def train_dcn_kfold(train_df, feature_cols, seq_col, target_col,
         'best_model_path': consolidated_model_path or best_fold_result['model_path']
     }
 
-def load_best_kfold_model(feature_cols, best_fold_path, device="cuda"):
+
+def load_best_kfold_model(numeric_cols, categorical_info, best_fold_path, device="cuda"):
     """베스트 K-Fold 모델 로드"""
-    d_features = len(feature_cols)
+    categorical_info = categorical_info or {
+        'columns': [],
+        'maps': {},
+        'cardinalities': [],
+        'embedding_dims': [],
+        'unique_counts': [],
+    }
     model = DCNModel(
-        d_features=d_features,
+        num_numeric_features=len(numeric_cols),
+        categorical_cardinalities=categorical_info.get('cardinalities', []),
+        embedding_dims=categorical_info.get('embedding_dims', []),
         lstm_hidden=64,
         cross_layers=3,
         deep_hidden=[512, 256, 128],
-        dropout=0.3
+        dropout=0.3,
+        embedding_dropout=0.05,
     ).to(device)
-    
+
     model.load_state_dict(torch.load(best_fold_path, map_location=device))
     return model

@@ -19,7 +19,7 @@ from inference import predict, create_submission
 # 1. 데이터 로딩 및 전처리
 print("\n1. Loading and preprocessing data...")
 train_df, test_df = load_data(CFG['DATA_PATH'])
-feature_cols, seq_col, target_col = get_feature_columns(train_df)
+numeric_cols, categorical_info, seq_col, target_col = get_feature_columns(train_df)
 
 # 2. 모델 훈련
 print(f"\n2. Training DCN model...")
@@ -30,7 +30,8 @@ print(f"   - Device: {device}")
 
 kfold_results = train_dcn_kfold(
     train_df=train_df,
-    feature_cols=feature_cols,
+    numeric_cols=numeric_cols,
+    categorical_info=categorical_info,
     seq_col=seq_col,
     target_col='clicked',
     n_folds=3,  # 불균형 데이터에서는 3-5가 적당
@@ -38,8 +39,8 @@ kfold_results = train_dcn_kfold(
     epochs=10,
     lr=1e-3,
     device=device,
-    alpha=0.7,
-    margin=1.0,
+    alpha=0.6, #0.7->0.6
+    margin=1.5, #1.0 -> 1.5 
     random_state=42,
     checkpoint_dir=CFG['CHECKPOINT_DIR'],
     log_dir=CFG['LOG_DIR']
@@ -47,7 +48,8 @@ kfold_results = train_dcn_kfold(
 
 best_model_path = kfold_results.get('best_model_path') or kfold_results['best_fold']['model_path']
 model = load_best_kfold_model(
-    feature_cols=feature_cols,
+    numeric_cols=numeric_cols,
+    categorical_info=categorical_info,
     best_fold_path=best_model_path,
     device=device
 )
@@ -64,7 +66,8 @@ test_pd = test_df.to_pandas()
 test_preds = predict(
     model=model,
     test_df=test_pd,
-    feature_cols=feature_cols,
+    numeric_cols=numeric_cols,
+    categorical_info=categorical_info,
     seq_col=seq_col,
     batch_size=CFG['BATCH_SIZE'],
     device=device
@@ -72,7 +75,7 @@ test_preds = predict(
 
 # 제출 파일 생성
 os.makedirs(CFG['OUTPUT_PATH'], exist_ok=True)
-submission_filename = "dcn_submission0922.csv"
+submission_filename = "dcn_submission0923.csv"
 submission_path = os.path.join(CFG['OUTPUT_PATH'], submission_filename)
 submission = create_submission(
     test_preds=test_preds,

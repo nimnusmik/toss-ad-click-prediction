@@ -34,7 +34,7 @@ def main():
     # 1. 데이터 로딩 및 전처리
     print("\n1. Loading and preprocessing data...")
     train_df, test_df = load_data(CFG['DATA_PATH'])
-    feature_cols, seq_col, target_col = get_feature_columns(train_df)
+    numeric_cols, categorical_info, seq_col, target_col = get_feature_columns(train_df)
     
     # 2. 모델 훈련
     print(f"\n2. Training DCN model...")
@@ -45,7 +45,8 @@ def main():
     
     model = train_dcn_model(
         train_df=train_df,
-        feature_cols=feature_cols,
+        numeric_cols=numeric_cols,
+        categorical_info=categorical_info,
         seq_col=seq_col,
         target_col=target_col,
         batch_size=CFG['BATCH_SIZE'],
@@ -64,13 +65,14 @@ def main():
     test_pd = test_df.to_pandas()
     
     # 모델 로드 (훈련된 모델 사용)
-    model = load_model(CFG['MODEL_PATH'], len(feature_cols), device)
+    model = load_model(CFG['MODEL_PATH'], numeric_cols, categorical_info, device)
     
     # 예측 수행
     test_preds = predict(
         model=model,
         test_df=test_pd,
-        feature_cols=feature_cols,
+        numeric_cols=numeric_cols,
+        categorical_info=categorical_info,
         seq_col=seq_col,
         batch_size=CFG['BATCH_SIZE'],
         device=device
@@ -89,17 +91,17 @@ def main():
     print(f"   - Predictions shape: {test_preds.shape}")
     print(f"   - Prediction range: [{test_preds.min():.4f}, {test_preds.max():.4f}]")
     
-    return model, test_preds, submission, train_df, feature_cols, seq_col, target_col
+    return model, test_preds, submission, train_df, numeric_cols, categorical_info, seq_col, target_col
 
 
     
 #%%
-model, predictions, submission, train_df, feature_cols, seq_col, target_col = main()
+model, predictions, submission, train_df, numeric_cols, categorical_info, seq_col, target_col = main()
 
 
 #%%
 # 간단한 모델 분석 실행
-def simple_model_analysis(model, train_df, feature_cols, seq_col, target_col):
+def simple_model_analysis(model, train_df, numeric_cols, categorical_info, seq_col, target_col):
     """간단한 모델 해석 분석"""
     print("\n" + "=" * 80)
     print("🔍 SIMPLE MODEL ANALYSIS")
@@ -113,7 +115,7 @@ def simple_model_analysis(model, train_df, feature_cols, seq_col, target_col):
     sample_df = train_pd.sample(n=min(5000000, len(train_pd)), random_state=42)
     _, val_df = train_test_split(sample_df, test_size=0.3, random_state=42)
     
-    val_dataset = ClickDataset(val_df, feature_cols, seq_col, target_col, has_target=True)
+    val_dataset = ClickDataset(val_df, numeric_cols, seq_col, target_col, categorical_info=categorical_info, has_target=True)
     val_loader = DataLoader(val_dataset, batch_size=1024, shuffle=False, collate_fn=collate_fn_train)
     
     print(f"   분석 데이터: {len(val_df):,}개 샘플")
@@ -125,10 +127,14 @@ def simple_model_analysis(model, train_df, feature_cols, seq_col, target_col):
     correct, total = 0, 0
     
     with torch.no_grad():
-        for xs, seqs, seq_lens, ys in tqdm(val_loader, desc="성능 평가"):
-            xs, seqs, seq_lens, ys = xs.to(device), seqs.to(device), seq_lens.to(device), ys.to(device)
-            
-            logits = model(xs, seqs, seq_lens)
+        for x_num, x_cat, seqs, seq_lens, ys in tqdm(val_loader, desc="성능 평가"):
+            x_num = x_num.to(device)
+            x_cat = x_cat.to(device) if x_cat is not None else None
+            seqs = seqs.to(device)
+            seq_lens = seq_lens.to(device)
+            ys = ys.to(device)
+
+            logits = model(x_num, x_cat, seqs, seq_lens)
             probs = torch.sigmoid(logits)
             predicted = (probs > 0.5).float()
             
@@ -172,24 +178,27 @@ def simple_model_analysis(model, train_df, feature_cols, seq_col, target_col):
     feature_importance = []
     
     # 상위 30개 피처만 빠르게 테스트
-    important_features = feature_cols[:30]  
+    important_features = numeric_cols[:30]  
     
     for feat_idx in tqdm(range(len(important_features)), desc="피처 중요도"):
         # 작은 샘플로 빠르게 테스트
         test_probs = []
         
         with torch.no_grad():
-            for batch_idx, (xs, seqs, seq_lens, ys) in enumerate(val_loader):
+            for batch_idx, (x_num, x_cat, seqs, seq_lens, ys) in enumerate(val_loader):
                 if batch_idx >= 5:  # 5개 배치만
                     break
-                xs, seqs, seq_lens = xs.to(device), seqs.to(device), seq_lens.to(device)
-                
+                x_num = x_num.to(device)
+                x_cat = x_cat.to(device) if x_cat is not None else None
+                seqs = seqs.to(device)
+                seq_lens = seq_lens.to(device)
+
                 # 피처 permutation
-                xs_perm = xs.clone()
-                perm_indices = torch.randperm(xs_perm.size(0))
-                xs_perm[:, feat_idx] = xs_perm[perm_indices, feat_idx]
-                
-                logits = model(xs_perm, seqs, seq_lens)
+                x_perm = x_num.clone()
+                perm_indices = torch.randperm(x_perm.size(0))
+                x_perm[:, feat_idx] = x_perm[perm_indices, feat_idx]
+
+                logits = model(x_perm, x_cat, seqs, seq_lens)
                 probs = torch.sigmoid(logits)
                 test_probs.extend(probs.cpu().numpy())
         
@@ -357,7 +366,8 @@ print(f"\n🤔 모델이 어떻게 판단하고 있는지 간단히 분석해보
 analysis_results = simple_model_analysis(
     model=model,
     train_df=train_df,
-    feature_cols=feature_cols,
+    numeric_cols=numeric_cols,
+    categorical_info=categorical_info,
     seq_col=seq_col,
     target_col=target_col
 )

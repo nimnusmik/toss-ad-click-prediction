@@ -52,14 +52,17 @@ kfold_results = train_dcn_kfold(
     categorical_info=categorical_info,
     seq_col=seq_col,
     target_col='clicked',
-    n_folds=3,  # 불균형 데이터에서는 3-5가 적당
-    batch_size=512,
-    epochs=10,
-    lr=1e-3,
+
+    n_folds=CFG['FOLDS'], 
+    batch_size=CFG['BATCH_SIZE'],
+    epochs=CFG['EPOCHS'],
+    lr= CFG['LEARNING_RATE'],
+
     device=device,
-    alpha=0.6, #0.7->0.6
-    margin=1.5, #1.0 -> 1.5 
+    alpha=0.7, #0.7->0.6->0.7
+    margin=1.0, #1.0 -> 1.5->1.0
     random_state=42,
+
     checkpoint_dir=CFG['CHECKPOINT_DIR'],
     log_dir=CFG['LOG_DIR'],
     **wandb_kwargs,

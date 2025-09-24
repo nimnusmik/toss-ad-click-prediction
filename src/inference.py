@@ -9,6 +9,7 @@ from model import DCNModel
 from data_loader import ClickDataset, collate_fn_infer
 
 
+
 def load_model(model_path, numeric_cols, categorical_info, device):
     """저장된 모델 로드"""
     categorical_info = categorical_info or {

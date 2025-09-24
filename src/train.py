@@ -136,6 +136,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
+    
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='max', patience=3, factor=0.5
     )

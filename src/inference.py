@@ -1,13 +1,14 @@
-import torch
 import os
-import pandas as pd
+from collections.abc import Sequence
+
 import numpy as np
+import pandas as pd
+import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from model import DCNModel
 from data_loader import ClickDataset, collate_fn_infer
-
 
 
 def load_model(model_path, numeric_cols, categorical_info, device):
@@ -34,8 +35,31 @@ def load_model(model_path, numeric_cols, categorical_info, device):
     return model
 
 
-def predict(model, test_df, numeric_cols, categorical_info, seq_col, batch_size, device):
-    """테스트 데이터에 대한 예측 수행"""
+def load_models(model_paths, numeric_cols, categorical_info, device):
+    """Load multiple fold models for ensemble inference."""
+    if not model_paths:
+        raise ValueError("model_paths must contain at least one checkpoint path")
+
+    models = []
+    for path in model_paths:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Model checkpoint not found: {path}")
+        models.append(load_model(path, numeric_cols, categorical_info, device))
+
+    return models
+
+
+def predict(
+    model,
+    test_df,
+    numeric_cols,
+    categorical_info,
+    seq_col,
+    batch_size,
+    device,
+    temperature: float | None = None,
+):
+    """테스트 데이터에 대한 예측 수행 (ensemble-aware)."""
     test_dataset = ClickDataset(
         test_df,
         numeric_cols,
@@ -50,8 +74,20 @@ def predict(model, test_df, numeric_cols, categorical_info, seq_col, batch_size,
         collate_fn=collate_fn_infer,
     )
 
-    model.eval()
-    predictions = []
+    models: list[DCNModel]
+    if isinstance(model, Sequence):
+        models = list(model)
+    else:
+        models = [model]
+
+    if not models:
+        raise ValueError("At least one model instance is required for prediction")
+
+    for mdl in models:
+        mdl.eval()
+
+    ensemble_predictions: list[torch.Tensor] = []
+    fold_predictions: list[list[torch.Tensor]] = [[] for _ in models]
 
     with torch.no_grad():
         for x_num, x_cat, seqs, lens in tqdm(test_loader, desc="Inference"):
@@ -59,12 +95,29 @@ def predict(model, test_df, numeric_cols, categorical_info, seq_col, batch_size,
             seqs = seqs.to(device)
             lens = lens.to(device)
             x_cat = x_cat.to(device) if x_cat is not None else None
-            preds = torch.sigmoid(model(x_num, x_cat, seqs, lens)).cpu()
-            predictions.append(preds)
 
-    test_preds = torch.cat(predictions).numpy()
+            fold_logits = []
+            for mdl in models:
+                logits = mdl(x_num, x_cat, seqs, lens)
+                fold_logits.append(logits)
 
-    return test_preds
+            stacked_logits = torch.stack(fold_logits)
+            stacked_probs = torch.sigmoid(stacked_logits)
+
+            for idx, probs in enumerate(stacked_probs):
+                fold_predictions[idx].append(probs.cpu())
+
+            mean_logits = stacked_logits.mean(dim=0)
+            if temperature is not None:
+                mean_logits = mean_logits / temperature
+            ensemble_probs = torch.sigmoid(mean_logits).cpu()
+            ensemble_predictions.append(ensemble_probs)
+
+    ensemble_array = torch.cat(ensemble_predictions).numpy()
+    fold_arrays = [torch.cat(preds).numpy() for preds in fold_predictions]
+    fold_matrix = np.vstack(fold_arrays).T if len(fold_arrays) > 1 else fold_arrays[0][:, None]
+
+    return ensemble_array, fold_matrix
 
 def create_submission(test_preds, sample_submission_path, output_path):
     """제출 파일 생성"""

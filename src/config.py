@@ -17,7 +17,7 @@ def seed_everything(seed):
 CFG = {
     'BATCH_SIZE': 1024, #4096->512->1024
     'EPOCHS': 20, # 100
-    'FOLDS':3, #5
+    'FOLDS': 3, #5
     'LEARNING_RATE': 8e-3, #1e-3-> 8e-3
     'SEED': 42,
     'DATA_PATH': '../data/processed/',
@@ -25,6 +25,7 @@ CFG = {
     'CHECKPOINT_DIR': '../models/',
     'LOG_DIR': '../logs/',
     'MODEL_PATH': '../models/best_dcn_model.pth',
+    'CALIBRATION_PATH': '../models/temperature_calibration.json',
     'USE_WANDB': True,
     'WANDB_PROJECT': 'ctr-dcn-monitoring',
     'WANDB_RUN_NAME': None,

@@ -6,20 +6,33 @@ import argparse
 from typing import Optional
 
 import wandb
+import os
+import sys
 
 from config import CFG, device
 from data_loader import get_feature_columns, load_data
 from train import train_dcn_kfold
 
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.getcwd())
+
 SWEEP_CONFIG = {
     'method': 'grid',
     'metric': {'name': 'val_final', 'goal': 'maximize'},
     'parameters': {
-        'alpha': {'values': [0.5, 0.6, 0.7, 0.8]},
-        'margin': {'values': [0.5, 1.0, 1.5]},
-        'learning_rate': {'values': [0.001, 0.0005]},
-        'batch_size': {'values': [512, 1024]},
+        # 현재 0.7이 잘 작동하므로 주변 값들로 범위 설정
+        'alpha': {'values': [0.6, 0.8]},
+        
+        # margin 1.0이 baseline이므로 확장 탐색
+        'margin': {'values': [0.8, 1.2]},
+        
+        # 현재 0.008 기준으로 위아래 범위 설정 (너무 낮으면 학습 속도 저하)
+        'learning_rate': {'values': [0.005, 0.01]},
+        
+        # 현재 1024가 잘 작동하므로 유지 
+        'batch_size': {'values': [1024]},
     },
+    'program': 'src/wandb_sweep.py' 
 }
 
 
@@ -37,9 +50,9 @@ def sweep_train(config: Optional[dict] = None) -> None:
             categorical_info=categorical_info,
             seq_col=seq_col,
             target_col=target_col,
-            n_folds=3,
+            n_folds=2,
             batch_size=cfg.batch_size,
-            epochs=CFG['EPOCHS'],
+            epochs=2,
             lr=cfg.learning_rate,
             device=device,
             alpha=cfg.alpha,
@@ -61,7 +74,7 @@ def main() -> None:
         action='store_true',
         help='Create the sweep on the W&B backend and print its ID',
     )
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     if args.create:
         sweep_id = wandb.sweep(SWEEP_CONFIG, project=CFG.get('WANDB_PROJECT'))

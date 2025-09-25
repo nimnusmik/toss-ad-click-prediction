@@ -40,10 +40,10 @@ CORRECTED_SWEEP_CONFIG = {
     'metric': {'name': 'val_final', 'goal': 'maximize'},
     'parameters': {
         # 원래 좋았던 0.008을 중심으로 범위 확장
-        'learning_rate': {'values': [0.005, 0.008, 0.01, 0.012]},
+        'learning_rate': {'values': [0.005, 0.008, 0.01]}, # 0.012
         
         # batch_size와 learning_rate의 조합 고려
-        'batch_size': {'values': [512, 1024, 2048]},
+        'batch_size': {'values': [1024, 2048, 4096]}, #512
         
         # margin은 중요하다고 확인되었으므로 유지
         'margin': {'values': [1.0, 1.5, 2.0]},

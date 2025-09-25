@@ -229,29 +229,60 @@ class EnsembleVisualizer:
         index: int,
         device: torch.device,
     ) -> tuple[np.ndarray, float]:
-        model.zero_grad(set_to_none=True)
-        with torch.enable_grad():
-            x_num, x_cat, seq, *_ = dataset[index]
+    # 현재 모델의 상태를 저장
+        original_training_mode = model.training
+        
+        # BatchNorm 모듈들의 원래 상태 저장
+        original_bn_modes = {}
+        for name, module in model.named_modules():
+            if isinstance(module, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d)):
+                original_bn_modes[name] = module.training
+        
+        try:
+            # 전체 모델을 training 모드로 전환 (RNN backward를 위해)
+            model.train()
+            
+            # BatchNorm 모듈들만 evaluation 모드로 설정 (단일 배치 문제 해결)
+            for name, module in model.named_modules():
+                if isinstance(module, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d)):
+                    module.eval()
+            
+            model.zero_grad(set_to_none=True)
+            with torch.enable_grad():
+                x_num, x_cat, seq, *_ = dataset[index]
 
-            x_num = x_num.unsqueeze(0).to(device)
-            x_num = x_num.clone().detach().requires_grad_(True)
+                x_num = x_num.unsqueeze(0).to(device)
+                x_num = x_num.clone().detach().requires_grad_(True)
 
-            seq_tensor = seq.unsqueeze(0).to(device)
-            seq_length = torch.tensor([seq_tensor.shape[1]], dtype=torch.long, device=device)
+                seq_tensor = seq.unsqueeze(0).to(device)
+                seq_length = torch.tensor([seq_tensor.shape[1]], dtype=torch.long, device=device)
 
-            if x_cat is not None:
-                x_cat_tensor = x_cat.unsqueeze(0).to(device)
-            else:
-                x_cat_tensor = None
+                if x_cat is not None:
+                    x_cat_tensor = x_cat.unsqueeze(0).to(device)
+                else:
+                    x_cat_tensor = None
 
-            logits = model(x_num, x_cat_tensor, seq_tensor, seq_length)
-            prob = torch.sigmoid(logits)
-            prob.backward()
+                # 이제 RNN은 training 모드, BatchNorm은 eval 모드로 실행
+                logits = model(x_num, x_cat_tensor, seq_tensor, seq_length)
+                prob = torch.sigmoid(logits)
+                
+                # backward pass 실행 (RNN은 training 모드이므로 가능)
+                prob.backward()
 
-            gradient = x_num.grad.detach().cpu().numpy()[0]
-            values = x_num.detach().cpu().numpy()[0]
-            contribution = gradient * values
+                gradient = x_num.grad.detach().cpu().numpy()[0]
+                values = x_num.detach().cpu().numpy()[0]
+                contribution = gradient * values
 
+        finally:
+            # 모든 모듈의 원래 모드로 복원
+            model.train(original_training_mode)
+            
+            # BatchNorm 모듈들의 원래 상태 복원
+            for name, module in model.named_modules():
+                if isinstance(module, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d)):
+                    original_mode = original_bn_modes.get(name, False)
+                    module.train(original_mode)
+            
         model.zero_grad(set_to_none=True)
         return contribution, float(prob.detach().cpu().item())
 

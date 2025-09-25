@@ -35,6 +35,22 @@ SWEEP_CONFIG = {
     'program': 'src/wandb_sweep.py' 
 }
 
+CORRECTED_SWEEP_CONFIG = {
+    'method': 'grid',
+    'metric': {'name': 'val_final', 'goal': 'maximize'},
+    'parameters': {
+        # 원래 좋았던 0.008을 중심으로 범위 확장
+        'learning_rate': {'values': [0.005, 0.008, 0.01, 0.012]},
+        
+        # batch_size와 learning_rate의 조합 고려
+        'batch_size': {'values': [512, 1024, 2048]},
+        
+        # margin은 중요하다고 확인되었으므로 유지
+        'margin': {'values': [1.0, 1.5, 2.0]},
+        
+        'alpha': {'values': [0.7, 0.8]}
+    }
+}
 
 def sweep_train(config: Optional[dict] = None) -> None:
     """Entry point for wandb agent runs."""
@@ -77,7 +93,8 @@ def main() -> None:
     args, _ = parser.parse_known_args()
 
     if args.create:
-        sweep_id = wandb.sweep(SWEEP_CONFIG, project=CFG.get('WANDB_PROJECT'))
+        #sweep_id = wandb.sweep(SWEEP_CONFIG, project=CFG.get('WANDB_PROJECT'))
+        sweep_id = wandb.sweep(CORRECTED_SWEEP_CONFIG, project=CFG.get('WANDB_PROJECT'))
         print(f"Created sweep: {sweep_id}")
         return
 

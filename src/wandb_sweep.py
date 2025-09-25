@@ -49,7 +49,8 @@ CORRECTED_SWEEP_CONFIG = {
         'margin': {'values': [1.0, 1.5, 2.0]},
         
         'alpha': {'values': [0.7, 0.8]}
-    }
+    },
+    'program': 'src/wandb_sweep.py' 
 }
 
 def sweep_train(config: Optional[dict] = None) -> None:

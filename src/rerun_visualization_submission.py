@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 import torch
 import numpy as np
+import pandas as pd
 
 # 현재 디렉토리를 Python 경로에 추가
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -19,6 +20,71 @@ from config import CFG, device
 from data_loader import load_data, get_feature_columns, ClickDataset
 from inference import load_models, predict, create_submission
 from visualization import EnsembleVisualizer
+
+def analyze_low_importance_features(
+    global_series: pd.Series,
+    *,
+    bottom_percentile: float = 10.0,
+    min_threshold: float = None,
+    min_features_to_keep: int = 50,
+    safe_mode: bool = True,
+) -> dict:
+    """
+    보수적으로 낮은 중요도 변수들을 식별합니다.
+    
+    Args:
+        global_series: 글로벌 feature importance Series
+        bottom_percentile: 제거할 하위 퍼센트 (5.0-15.0 권장)
+        min_threshold: 절대적 임계값 (이 값 이하는 제거 후보)
+        min_features_to_keep: 최소 유지할 변수 개수
+        safe_mode: 안전 모드 (극단적 제거 방지)
+        
+    Returns:
+        dict: 분석 결과 및 제거 후보 변수들
+    """
+    import pandas as pd
+    import numpy as np
+    
+    if global_series.empty:
+        return {'candidates': [], 'summary': 'No features to analyze'}
+    
+    total_features = len(global_series)
+    
+    # 안전 모드에서 extreme 설정 방지
+    if safe_mode:
+        bottom_percentile = min(bottom_percentile, 15.0)  # 최대 15%까지만
+        min_features_to_keep = max(min_features_to_keep, total_features // 2)
+    
+    # Percentile 기반 임계값 계산
+    percentile_threshold = np.percentile(global_series.values, bottom_percentile)
+    
+    # 최종 임계값 결정
+    if min_threshold is not None:
+        final_threshold = max(percentile_threshold, min_threshold)
+    else:
+        final_threshold = percentile_threshold
+    
+    # 제거 후보 식별
+    candidates = global_series[global_series <= final_threshold].sort_values()
+    
+    # 안전장치: 너무 많이 제거되는 것 방지
+    max_to_remove = total_features - min_features_to_keep
+    if len(candidates) > max_to_remove:
+        candidates = candidates.head(max_to_remove)
+    
+    # 통계 계산
+    kept_features = total_features - len(candidates)
+    
+    return {
+        'candidates': candidates.index.tolist(),
+        'candidates_series': candidates,
+        'total_features': total_features,
+        'candidates_count': len(candidates),
+        'kept_features': kept_features,
+        'removal_percentage': len(candidates) / total_features * 100,
+        'threshold_used': final_threshold,
+        'safe_to_remove': len(candidates) <= max_to_remove and len(candidates) < total_features * 0.15
+    }
 
 def main():
     print("🎯 Visualization 재실행 시작...")
@@ -159,9 +225,53 @@ def main():
             global_series = feature_contrib_outputs['global_series'].head(5)
             for feature, value in global_series.items():
                 print(f"       • {feature}: {value:.4f}")
+            
+            # 6. 낮은 중요도 변수 식별 분석
+            print("\n6. 낮은 중요도 변수 식별...")
+            try:
+                full_global_series = feature_contrib_outputs['global_series']
+                
+                # 보수적 접근: 5%, 10% 두 가지 시나리오 분석
+                scenarios = [
+                    {'percentile': 5.0, 'name': '매우 보수적'},
+                    {'percentile': 10.0, 'name': '보수적'},
+                ]
+                
+                for scenario in scenarios:
+                    analysis = analyze_low_importance_features(
+                        full_global_series, 
+                        bottom_percentile=scenario['percentile']
+                    )
+                    
+                    print(f"\n   🔍 {scenario['name']} 시나리오 (하위 {scenario['percentile']}%):")
+                    print(f"       • 전체 변수: {analysis['total_features']}개")
+                    print(f"       • 제거 후보: {analysis['candidates_count']}개 ({analysis['removal_percentage']:.1f}%)")
+                    print(f"       • 유지 변수: {analysis['kept_features']}개")
+                    print(f"       • 임계값: {analysis['threshold_used']:.6f}")
+                    
+                    if analysis['candidates_count'] > 0:
+                        candidates_series = analysis['candidates_series']
+                        print(f"       • 제거 후보 중요도 범위: {candidates_series.min():.6f} ~ {candidates_series.max():.6f}")
+                        
+                        if analysis['candidates_count'] >= 5:
+                            print("       • 제거 후보 변수들:")
+                            for var_name, importance in candidates_series.items():
+                                print(f"           - {var_name}: {importance:.6f}")
+                        else:
+                            print(f"       • 가장 낮은 5개 변수:")
+                            for var_name, importance in candidates_series.head(5).items():
+                                print(f"           - {var_name}: {importance:.6f}")
+                    
+                    # 안전성 평가
+                    safety_status = "✅ 안전" if analysis['safe_to_remove'] else "⚠️ 주의"
+                    print(f"       • 제거 안전성: {safety_status}")
+                
+                
+            except Exception as e:
+                print(f"   ❌ 낮은 중요도 변수 분석 실패: {e}")
                 
         else:
-            print("   ⚠️  Feature contribution 결과 없음")
+            print("   ⚠️ Feature contribution 결과 없음")
             
     except Exception as e:
         print(f"   ❌ Feature contribution 분석 실패: {e}")

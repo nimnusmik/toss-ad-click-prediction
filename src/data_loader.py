@@ -13,11 +13,10 @@ DEFAULT_CATEGORICAL_COLS = [
     'hour',
 ]
 
-
 def load_data(data_path):
     """데이터 로딩 및 전처리"""
-    all_train = pl.read_parquet(f"{data_path}train_processed_3.parquet")
-    test = pl.read_parquet(f"{data_path}test_processed_3.parquet")
+    all_train = pl.read_parquet(f"{data_path}train_processed_4.parquet")
+    test = pl.read_parquet(f"{data_path}test_processed_4.parquet")
 
     print("Train shape:", all_train.shape)
     print("Test shape:", test.shape)

@@ -306,7 +306,7 @@ drop_columns = [
 ]
 
 additional_drop = [
-    'l_feat_16',       # l_feat_1과 완전상관 
+    #'l_feat_16',       # l_feat_1과 완전상관 
     'history_b_24',    # history 16과 완전 상관
     'feat_d_5',        # feat_d_1과 완전상관
     'feat_d_6',         # feat_d_1과 완전상관
@@ -328,8 +328,8 @@ additional_drop = [
 
 
 # 위 특성들 제거
-X_train_selected = X_train_processed[[col for col in X_train_processed.columns if col not in drop_columns and additional_drop]]
-X_test_selected  = X_test_processed[[col for col in X_test_processed.columns if col not in drop_columns and additional_drop]]
+X_train_selected = X_train_processed[[col for col in X_train_processed.columns if col not in drop_columns and col not in additional_drop]]
+X_test_selected = X_test_processed[[col for col in X_test_processed.columns if col not in drop_columns and col not in additional_drop]]
 
 
 print("선택된 특성으로 데이터 준비 완료!")

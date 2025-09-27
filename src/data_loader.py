@@ -11,6 +11,7 @@ DEFAULT_CATEGORICAL_COLS = [
     'inventory_id',
     'day_of_week',
     'hour',
+    'is_saturday',
 ]
 
 def load_data(data_path):

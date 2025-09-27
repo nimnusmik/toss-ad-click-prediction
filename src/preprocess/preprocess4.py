@@ -1,3 +1,7 @@
+
+#%%
+#!pip install -r '/root/NLP/toss-ad-click-prediction/requirements.txt'
+
 #%%
 import os
 import random
@@ -9,7 +13,7 @@ from tqdm import tqdm
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as Få
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, random_split
 import polars as pl
@@ -104,7 +108,8 @@ def add_dcn_optimized_features(df):
           .alias("time_period_id"),
         
         # 5. 주말 여부 (Binary feature - DCN이 효율적으로 처리)
-        ((pl.col("day_of_week") == 6) | (pl.col("day_of_week") == 7)).cast(pl.Int32).alias("is_weekend"),
+        ((pl.col("day_of_week") == 1) | (pl.col("day_of_week") == 7)).cast(pl.Int32).alias("is_weekend"),
+        ((pl.col("day_of_week") == 7)).cast(pl.Int32).alias("is_saturday"),
         
         # ============ DCN Cross Network 활용을 위한 추가 특성 ============
         

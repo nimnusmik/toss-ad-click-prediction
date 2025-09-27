@@ -15,10 +15,10 @@ def seed_everything(seed):
 
 # 설정값들
 CFG = {
-    'BATCH_SIZE': 4096, #4096->512->1024
+    'BATCH_SIZE': 1024, #4096->512->1024
     'EPOCHS': 20, # 100
     'FOLDS': 3, #5
-    'LEARNING_RATE': 1e-3, #1e-3-> 8e-3->0.001
+    'LEARNING_RATE': 8e-3, #1e-3-> 8e-3->0.001
     'SEED': 42,
     'DATA_PATH': '../data/processed/',
     'OUTPUT_PATH': '../data/output/',

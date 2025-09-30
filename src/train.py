@@ -12,7 +12,7 @@ from sklearn.model_selection import train_test_split
 import pandas as pd
 import numpy as np
 
-from model import DCNModel, DCNModelEnhanced
+from model import DCNModel, DCNModelEnhanced, DCNModelV3
 from data_loader import ClickDataset, collate_fn_train
 from evaluate import calculate_metrics
 
@@ -139,25 +139,41 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
     #).to(device)
     
     # 2. 향상된 Cross Network 사용
-    model = DCNModelEnhanced(
+    # model = DCNModelEnhanced(
+    #     num_numeric_features=num_numeric_features,
+    #     categorical_cardinalities=cat_cardinalities,
+    #     embedding_dims=embedding_dims,
+    #     cross_layers=3,
+    #     deep_hidden=[512, 256, 128, 64],
+    #     use_enhanced_cross=True  # 향상된 Cross Network
+    # ).to(device)
+    
+    # 3. Multi-head Cross Network 사용
+    # model = DCNModelEnhanced(
+    #     num_numeric_features=num_numeric_features,
+    #     categorical_cardinalities=cat_cardinalities,
+    #     embedding_dims=embedding_dims,
+    #     cross_layers=4,
+    #     deep_hidden=[512, 256, 128, 64],
+    #     use_multi_head=True,     # Multi-head 사용
+    #     num_cross_heads=3
+    # )
+    
+    # 4. DCN v3 (default)
+    model = DCNModelV3(
         num_numeric_features=num_numeric_features,
         categorical_cardinalities=cat_cardinalities,
         embedding_dims=embedding_dims,
-        cross_layers=3,
-        deep_hidden=[512, 256, 128, 64],
-        use_enhanced_cross=True  # 향상된 Cross Network
+        lstm_hidden=64,
+        cross_layers=4,
+        deep_hidden=[768, 512, 256, 128],
+        dropout=0.25,
+        embedding_dropout=0.05,
+        cross_num_experts=4,
+        cross_low_rank=32,
+        cross_gating_hidden=128,
+        cross_dropout=0.1,
     ).to(device)
-    
-    # 3. Multi-head Cross Network 사용
-    #model = DCNModelEnhanced(
-    #     num_numeric_features=num_numeric_features,
-    #    categorical_cardinalities=cat_cardinalities,
-    #    embedding_dims=embedding_dims,
-    #    cross_layers=4,
-    #    deep_hidden=[512, 256, 128, 64],
-    #    use_multi_head=True,     # Multi-head 사용
-    #    num_cross_heads=3
-    #)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     
@@ -168,7 +184,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
     best_val_score = float("-inf")
     best_model_state = None
     patience_counter = 0
-    early_stopping_patience = 5
+    early_stopping_patience = 15
 
     fold_results = []
 
@@ -178,6 +194,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
         train_preds, train_targets = [], []
 
         train_pbar = tqdm(train_loader, desc=f"Fold {fold_num} Train Epoch {epoch}")
+
         for x_num, x_cat, seqs, seq_lens, ys in train_pbar:
             x_num = x_num.to(device)
             seqs = seqs.to(device)

@@ -1,7 +1,9 @@
 import os
 import random
 import torch
+import numpy as np
 
+# 1. 시드 고정 함수
 def seed_everything(seed):
     """시드 고정 함수"""
     random.seed(seed)
@@ -12,6 +14,12 @@ def seed_everything(seed):
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+# 2. DataLoader worker 시드 고정
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 # 설정값들
 CFG = {

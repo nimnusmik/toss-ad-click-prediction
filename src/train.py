@@ -12,14 +12,16 @@ from sklearn.model_selection import train_test_split
 import pandas as pd
 import numpy as np
 
+from model import DCNModel, DCNModelEnhanced
+from data_loader import ClickDataset, collate_fn_train
+from evaluate import calculate_metrics
+
+
 try:
     import wandb
 except ImportError:
     wandb = None
 
-from model import DCNModel
-from data_loader import ClickDataset, collate_fn_train
-from evaluate import calculate_metrics
 
 def weighted_binary_crossentropy(y_true, y_pred, weights):
     """가중치가 적용된 binary crossentropy 손실"""
@@ -124,16 +126,38 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
     cat_cardinalities = categorical_info.get('cardinalities', [])
     embedding_dims = categorical_info.get('embedding_dims', [])
 
-    model = DCNModel(
+    # 1. 기본 DCN
+    #model = DCNModel(
+    #    num_numeric_features=num_numeric_features,
+    #    categorical_cardinalities=cat_cardinalities,
+    #    embedding_dims=embedding_dims,
+    #    lstm_hidden=64,
+    #    cross_layers=4, #6 #3
+    #    deep_hidden=[512, 256, 128], # [512, 256, 128], [512, 256, 128, 64]
+    #    dropout=0.3,
+    #    embedding_dropout=0.05,
+    #).to(device)
+    
+    # 2. 향상된 Cross Network 사용
+    model = DCNModelEnhanced(
         num_numeric_features=num_numeric_features,
         categorical_cardinalities=cat_cardinalities,
         embedding_dims=embedding_dims,
-        lstm_hidden=64,
         cross_layers=3,
-        deep_hidden=[512, 256, 128],
-        dropout=0.3,
-        embedding_dropout=0.05,
+        deep_hidden=[512, 256, 128, 64],
+        use_enhanced_cross=True  # 향상된 Cross Network
     ).to(device)
+    
+    # 3. Multi-head Cross Network 사용
+    #model = DCNModelEnhanced(
+    #     num_numeric_features=num_numeric_features,
+    #    categorical_cardinalities=cat_cardinalities,
+    #    embedding_dims=embedding_dims,
+    #    cross_layers=4,
+    #    deep_hidden=[512, 256, 128, 64],
+    #    use_multi_head=True,     # Multi-head 사용
+    #    num_cross_heads=3
+    #)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     
@@ -455,15 +479,16 @@ def load_best_kfold_model(numeric_cols, categorical_info, best_fold_path, device
         'embedding_dims': [],
         'unique_counts': [],
     }
-    model = DCNModel(
+    model = DCNModelEnhanced(
         num_numeric_features=len(numeric_cols),
         categorical_cardinalities=categorical_info.get('cardinalities', []),
         embedding_dims=categorical_info.get('embedding_dims', []),
         lstm_hidden=64,
         cross_layers=3,
-        deep_hidden=[512, 256, 128],
+        deep_hidden=[512, 256, 128, 64],
         dropout=0.3,
         embedding_dropout=0.05,
+        use_enhanced_cross=True
     ).to(device)
 
     model.load_state_dict(torch.load(best_fold_path, map_location=device))

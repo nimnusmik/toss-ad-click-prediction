@@ -7,7 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from model import DCNModel
+from model import DCNModel, DCNModelEnhanced
 from data_loader import ClickDataset, collate_fn_infer
 
 
@@ -18,15 +18,16 @@ def load_model(model_path, numeric_cols, categorical_info, device):
         'cardinalities': [],
         'embedding_dims': [],
     }
-    model = DCNModel(
+    model = DCNModelEnhanced(
         num_numeric_features=len(numeric_cols),
-        categorical_cardinalities=categorical_info.get('cardinalities', []), 
+        categorical_cardinalities=categorical_info.get('cardinalities', []),
         embedding_dims=categorical_info.get('embedding_dims', []),
         lstm_hidden=64,
         cross_layers=3,
-        deep_hidden=[512, 256, 128],
+        deep_hidden=[512, 256, 128, 64],
         dropout=0.3,
         embedding_dropout=0.05,
+        use_enhanced_cross=True
     ).to(device)
 
     model.load_state_dict(torch.load(model_path, map_location=device))
@@ -74,7 +75,7 @@ def predict(
         collate_fn=collate_fn_infer,
     )
 
-    models: list[DCNModel]
+    models: list[torch.nn.Module]
     if isinstance(model, Sequence):
         models = list(model)
     else:

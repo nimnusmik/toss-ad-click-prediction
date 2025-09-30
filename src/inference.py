@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from collections.abc import Sequence
 
 import numpy as np
@@ -7,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from model import DCNModel, DCNModelEnhanced
+from model import DCNModel, DCNModelEnhanced, DCNModelV3
 from data_loader import ClickDataset, collate_fn_infer
 
 
@@ -18,16 +19,19 @@ def load_model(model_path, numeric_cols, categorical_info, device):
         'cardinalities': [],
         'embedding_dims': [],
     }
-    model = DCNModelEnhanced(
+    model = DCNModelV3(
         num_numeric_features=len(numeric_cols),
         categorical_cardinalities=categorical_info.get('cardinalities', []),
         embedding_dims=categorical_info.get('embedding_dims', []),
         lstm_hidden=64,
-        cross_layers=3,
-        deep_hidden=[512, 256, 128, 64],
-        dropout=0.3,
+        cross_layers=4,
+        deep_hidden=[768, 512, 256, 128],
+        dropout=0.25,
         embedding_dropout=0.05,
-        use_enhanced_cross=True
+        cross_num_experts=4,
+        cross_low_rank=32,
+        cross_gating_hidden=128,
+        cross_dropout=0.1,
     ).to(device)
 
     model.load_state_dict(torch.load(model_path, map_location=device))
@@ -49,17 +53,16 @@ def load_models(model_paths, numeric_cols, categorical_info, device):
 
     return models
 
-
 def predict(
-    model,
-    test_df,
-    numeric_cols,
-    categorical_info,
-    seq_col,
-    batch_size,
-    device,
-    temperature: float | None = None,
-):
+        model,
+        test_df,
+        numeric_cols,
+        categorical_info,
+        seq_col,
+        batch_size,
+        device,
+        temperature: Optional[float] = None,
+    ):
     """테스트 데이터에 대한 예측 수행 (ensemble-aware)."""
     test_dataset = ClickDataset(
         test_df,

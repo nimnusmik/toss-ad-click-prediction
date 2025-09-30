@@ -338,3 +338,250 @@ class DCNModelEnhanced(nn.Module):
         logits = self.final_layer(final_input)
 
         return logits.squeeze(1)
+
+
+class CrossLayerV3(nn.Module):
+    """Mixture-of-experts cross layer with low-rank projections."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_experts: int = 4,
+        low_rank: int = 32,
+        gating_hidden: Optional[int] = None,
+        use_layer_norm: bool = True,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+
+        if low_rank > input_dim:
+            raise ValueError("low_rank must not exceed input_dim")
+
+        self.num_experts = num_experts
+        self.use_layer_norm = use_layer_norm
+
+        self.U = nn.Parameter(torch.empty(num_experts, input_dim, low_rank))
+        self.V = nn.Parameter(torch.empty(num_experts, low_rank, input_dim))
+        self.diag = nn.Parameter(torch.zeros(num_experts, input_dim))
+        self.bias = nn.Parameter(torch.zeros(num_experts, input_dim))
+
+        gating_layers: List[nn.Module]
+        gate_input_dim = input_dim * 2
+        if gating_hidden and gating_hidden > 0:
+            gating_layers = [
+                nn.Linear(gate_input_dim, gating_hidden),
+                nn.ReLU(),
+                nn.Linear(gating_hidden, num_experts),
+            ]
+        else:
+            gating_layers = [nn.Linear(gate_input_dim, num_experts)]
+        self.gating = nn.Sequential(*gating_layers)
+
+        self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else nn.Identity()
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.xavier_uniform_(self.U)
+        nn.init.xavier_uniform_(self.V)
+        nn.init.zeros_(self.diag)
+        nn.init.zeros_(self.bias)
+        for module in self.gating.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                nn.init.zeros_(module.bias)
+
+    def forward(self, x0: torch.Tensor, x_l: torch.Tensor) -> torch.Tensor:
+        gate_input = torch.cat([x0, x_l], dim=-1)
+        gate_scores = self.gating(gate_input)
+        gate = torch.softmax(gate_scores, dim=-1).unsqueeze(-1)
+
+        projected = torch.einsum('bi,eil->bel', x_l, self.U)
+        projected = torch.einsum('bel,elj->bej', projected, self.V)
+
+        diagonal = x_l.unsqueeze(1) * self.diag.unsqueeze(0)
+        expert_outputs = projected + diagonal + self.bias.unsqueeze(0)
+        expert_outputs = expert_outputs * x0.unsqueeze(1)
+
+        mixed = (expert_outputs * gate).sum(dim=1)
+        x_next = x_l + mixed
+
+        x_next = self.layer_norm(x_next)
+        x_next = self.dropout(x_next)
+        return x_next
+
+
+class CrossNetworkV3(nn.Module):
+    """Stack of CrossLayerV3 blocks."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_layers: int,
+        num_experts: int = 4,
+        low_rank: int = 32,
+        gating_hidden: Optional[int] = None,
+        use_layer_norm: bool = True,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+
+        if num_layers <= 0:
+            raise ValueError("num_layers must be positive")
+
+        self.layers = nn.ModuleList(
+            [
+                CrossLayerV3(
+                    input_dim=input_dim,
+                    num_experts=num_experts,
+                    low_rank=low_rank,
+                    gating_hidden=gating_hidden,
+                    use_layer_norm=use_layer_norm,
+                    dropout=dropout,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+
+    def forward(self, x0: torch.Tensor) -> torch.Tensor:
+        x_l = x0
+        for layer in self.layers:
+            x_l = layer(x0, x_l)
+        return x_l
+
+
+class DCNModelV3(nn.Module):
+    """Deep & Cross Network v3 with mixture-of-experts cross layers and gated fusion."""
+
+    def __init__(
+        self,
+        num_numeric_features: int,
+        categorical_cardinalities: Optional[List[int]] = None,
+        embedding_dims: Optional[List[int]] = None,
+        lstm_hidden: int = 64,
+        cross_layers: int = 3,
+        deep_hidden: Optional[List[int]] = None,
+        dropout: float = 0.3,
+        embedding_dropout: float = 0.05,
+        cross_num_experts: int = 4,
+        cross_low_rank: int = 32,
+        cross_gating_hidden: Optional[int] = None,
+        cross_dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+
+        deep_hidden = deep_hidden or [768, 512, 256, 128]
+        categorical_cardinalities = categorical_cardinalities or []
+        embedding_dims = embedding_dims or []
+
+        if len(categorical_cardinalities) != len(embedding_dims):
+            raise ValueError("categorical_cardinalities and embedding_dims must align")
+
+        self.num_numeric_features = num_numeric_features
+        self.embedding_layers = nn.ModuleList(
+            [
+                nn.Embedding(cardinality, dim)
+                for cardinality, dim in zip(categorical_cardinalities, embedding_dims)
+            ]
+        )
+        self.embedding_dropout = (
+            nn.Dropout(embedding_dropout) if self.embedding_layers else nn.Identity()
+        )
+        self.tabular_embedding_dim = sum(embedding_dims)
+
+        if self.num_numeric_features > 0:
+            self.bn_numeric = nn.BatchNorm1d(self.num_numeric_features)
+        else:
+            self.bn_numeric = nn.Identity()
+
+        tabular_dim = self.num_numeric_features + self.tabular_embedding_dim
+        total_input_dim = tabular_dim + lstm_hidden
+
+        self.lstm = nn.LSTM(input_size=1, hidden_size=lstm_hidden, batch_first=True)
+
+        self.cross_net = CrossNetworkV3(
+            input_dim=total_input_dim,
+            num_layers=cross_layers,
+            num_experts=cross_num_experts,
+            low_rank=cross_low_rank,
+            gating_hidden=cross_gating_hidden,
+            use_layer_norm=True,
+            dropout=cross_dropout,
+        )
+
+        deep_layers: List[nn.Module] = []
+        input_dim = total_input_dim
+        for hidden_dim in deep_hidden:
+            deep_layers.extend(
+                [
+                    nn.Linear(input_dim, hidden_dim),
+                    nn.BatchNorm1d(hidden_dim),
+                    nn.SiLU(),
+                    nn.Dropout(dropout),
+                ]
+            )
+            input_dim = hidden_dim
+
+        if deep_layers:
+            self.deep_net = nn.Sequential(*deep_layers)
+            self.deep_output_dim = input_dim
+        else:
+            self.deep_net = nn.Identity()
+            self.deep_output_dim = total_input_dim
+
+        fusion_dim = total_input_dim + self.deep_output_dim
+        fusion_hidden = max(fusion_dim // 2, 1)
+        self.fusion_gate = nn.Sequential(
+            nn.Linear(fusion_dim, fusion_hidden),
+            nn.SiLU(),
+            nn.Linear(fusion_hidden, 1),
+        )
+        self.final_layer = nn.Linear(total_input_dim + self.deep_output_dim, 1)
+
+    def forward(
+        self,
+        x_numeric: torch.Tensor,
+        x_categorical: Optional[torch.Tensor],
+        x_seq: torch.Tensor,
+        seq_lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.num_numeric_features > 0:
+            x_numeric = self.bn_numeric(x_numeric)
+
+        if self.embedding_layers:
+            if x_categorical is None:
+                raise ValueError("x_categorical must be provided when embeddings are defined")
+            embedded = [
+                emb(x_categorical[:, idx]) for idx, emb in enumerate(self.embedding_layers)
+            ]
+            x_cat = torch.cat(embedded, dim=1)
+            x_cat = self.embedding_dropout(x_cat)
+            x_tabular = (
+                torch.cat([x_numeric, x_cat], dim=1)
+                if self.num_numeric_features > 0
+                else x_cat
+            )
+        else:
+            x_tabular = x_numeric
+
+        x_seq = x_seq.unsqueeze(-1)
+        packed = nn.utils.rnn.pack_padded_sequence(
+            x_seq, seq_lengths.cpu(), batch_first=True, enforce_sorted=False
+        )
+        _, (h_n, _) = self.lstm(packed)
+        x_lstm = h_n[-1]
+
+        x_combined = torch.cat([x_tabular, x_lstm], dim=1)
+
+        cross_output = self.cross_net(x_combined)
+        deep_output = self.deep_net(x_combined)
+
+        fusion_input = torch.cat([cross_output, deep_output], dim=1)
+        gate = torch.sigmoid(self.fusion_gate(fusion_input))
+        fused_cross = cross_output * gate
+        fused_deep = deep_output * (1 - gate)
+        final_input = torch.cat([fused_cross, fused_deep], dim=1)
+        logits = self.final_layer(final_input)
+
+        return logits.squeeze(1)

@@ -148,7 +148,7 @@ class ClickDataset(Dataset):
         target_col=None,
         categorical_info=None,
         has_target=True,
-    ):
+        ):
         self.df = df.reset_index(drop=True)
         self.numeric_cols = numeric_cols
         self.seq_col = seq_col

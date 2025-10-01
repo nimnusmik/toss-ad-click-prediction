@@ -282,7 +282,7 @@ def main():
     print("5. 제출 파일 생성...")
     
     os.makedirs(CFG['OUTPUT_PATH'], exist_ok=True)
-    submission_filename = "dcn_submission0927.csv"
+    submission_filename = "dcn_submission1001.csv"
     submission_path = os.path.join(CFG['OUTPUT_PATH'], submission_filename)
     
     try:

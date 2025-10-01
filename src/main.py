@@ -8,18 +8,74 @@ import os
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader
 
 # 현재 디렉토리를 Python 경로에 추가
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 BASE_DIR = Path(__file__).resolve().parent
 
+from calibrate.calibration import TemperatureCalibrationResult, TemperatureScaler
 from config import CFG, device
-from data_loader import load_data, get_feature_columns, ClickDataset
-from train import train_dcn_kfold
-from inference import load_models, predict, create_submission
+from data_loader import ClickDataset, collate_fn_train, get_feature_columns, load_data
+from evaluate import calculate_metrics
+from inference import create_submission, load_models, predict
+from train import load_best_kfold_model, train_dcn_kfold
 from visualization import EnsembleVisualizer
+
+
+def _compute_sample_weights(labels: np.ndarray) -> np.ndarray:
+    class_counts = np.bincount(labels.astype(int), minlength=2).astype(np.float64)
+    total = float(labels.shape[0]) if labels.shape[0] else 1.0
+    class_counts = np.clip(class_counts, 1.0, None)
+    weight_0 = 0.5 / (class_counts[0] / total)
+    weight_1 = 0.5 / (class_counts[1] / total)
+    return np.where(labels == 0, weight_0, weight_1).astype(np.float32)
+
+
+def _select_calibration_holdout(df, fraction: float, random_state: int, max_samples: int | None):
+    if fraction <= 0 or len(df) == 0:
+        return df.iloc[0:0].copy()
+
+    indices = np.arange(len(df))
+    _, holdout_idx = train_test_split(
+        indices,
+        test_size=fraction,
+        stratify=df["clicked"],
+        random_state=random_state,
+    )
+
+    if max_samples is not None and len(holdout_idx) > max_samples:
+        rng = np.random.default_rng(random_state)
+        holdout_idx = rng.choice(holdout_idx, size=max_samples, replace=False)
+
+    return df.iloc[holdout_idx].reset_index(drop=True)
+
+
+def _collect_logits(model: torch.nn.Module, dataloader: DataLoader):
+    logits_list = []
+    targets_list = []
+
+    model.eval()
+    with torch.no_grad():
+        for x_num, x_cat, seqs, seq_lens, ys in dataloader:
+            x_num = x_num.to(device)
+            seqs = seqs.to(device)
+            seq_lens = seq_lens.to(device)
+            ys = ys.to(device)
+            x_cat = x_cat.to(device) if x_cat is not None else None
+
+            logits = model(x_num, x_cat, seqs, seq_lens)
+            logits_list.append(logits.cpu())
+            targets_list.append(ys.cpu())
+
+    logits_tensor = torch.cat(logits_list) if logits_list else torch.empty(0)
+    targets_tensor = torch.cat(targets_list) if targets_list else torch.empty(0)
+
+    return logits_tensor.numpy(), targets_tensor.numpy()
 
 
 # 1. 데이터 로딩 및 전처리
@@ -78,20 +134,108 @@ kfold_results = train_dcn_kfold(
 
 best_model_path = kfold_results.get('best_model_path') or kfold_results['best_fold']['model_path']
 fold_model_paths = [fold_result['model_path'] for fold_result in kfold_results['fold_results']]
-ensemble_models = load_models(
-    model_paths=fold_model_paths,
-    numeric_cols=numeric_cols,
-    categorical_info=categorical_info,
-    device=device,
-)
-
-# GPU 메모리 정리
-torch.cuda.empty_cache()
-
 calibration_temperature = None
 calibration_path_str = CFG.get('CALIBRATION_PATH')
-if calibration_path_str:
-    calibration_path = (BASE_DIR / calibration_path_str).resolve()
+calibration_path = (BASE_DIR / calibration_path_str).resolve() if calibration_path_str else None
+
+if CFG.get('CALIBRATION_ENABLED', True):
+    print("\n2a. Fitting temperature scaler on calibration holdout...")
+    holdout_fraction = CFG.get('CALIBRATION_HOLDOUT_FRACTION', 0.1)
+    max_holdout = CFG.get('CALIBRATION_MAX_SAMPLES')
+    calibration_batch_size = CFG.get('CALIBRATION_BATCH_SIZE', 1024)
+    random_state = CFG.get('SEED', 42)
+
+    if holdout_fraction <= 0:
+        print("   ℹ️  Calibration skipped because holdout fraction is non-positive.")
+    else:
+        try:
+            holdout_df = _select_calibration_holdout(
+                train_df,
+                fraction=holdout_fraction,
+                random_state=random_state,
+                max_samples=max_holdout,
+            )
+            if holdout_df.empty or holdout_df['clicked'].nunique() < 2:
+                print("   ⚠️  Holdout split lacks both classes; skipping temperature scaling.")
+            else:
+                print(f"   Holdout size: {len(holdout_df):,} rows")
+                holdout_dataset = ClickDataset(
+                    holdout_df,
+                    numeric_cols,
+                    seq_col,
+                    target_col=target_col,
+                    categorical_info=categorical_info,
+                    has_target=True,
+                )
+                holdout_loader = DataLoader(
+                    holdout_dataset,
+                    batch_size=calibration_batch_size,
+                    shuffle=False,
+                    collate_fn=collate_fn_train,
+                )
+
+                calibration_model = load_best_kfold_model(
+                    numeric_cols=numeric_cols,
+                    categorical_info=categorical_info,
+                    best_fold_path=str(best_model_path),
+                    device=device,
+                )
+
+                logits, targets = _collect_logits(calibration_model, holdout_loader)
+                if logits.size == 0:
+                    print("   ⚠️  No logits collected; temperature scaling skipped.")
+                else:
+                    probs_before = torch.sigmoid(torch.from_numpy(logits.astype(np.float32))).numpy()
+                    metrics_before = calculate_metrics(targets, probs_before)
+
+                    sample_weights = _compute_sample_weights(targets)
+                    scaler = TemperatureScaler()
+                    temperature, loss, iterations = scaler.fit(
+                        logits=logits,
+                        labels=targets,
+                        sample_weights=sample_weights,
+                    )
+
+                    scaled_logits = scaler.transform(logits)
+                    probs_after = torch.sigmoid(torch.from_numpy(scaled_logits.astype(np.float32))).numpy()
+                    metrics_after = calculate_metrics(targets, probs_after)
+
+                    calibration_temperature = float(temperature)
+                    print(
+                        f"   Pre-calibration — AP: {metrics_before['AP']:.4f}, "
+                        f"WLL: {metrics_before['WLL']:.4f}, Final: {metrics_before['Final_Score']:.4f}"
+                    )
+                    print(
+                        f"   Post-calibration — AP: {metrics_after['AP']:.4f}, "
+                        f"WLL: {metrics_after['WLL']:.4f}, Final: {metrics_after['Final_Score']:.4f}"
+                    )
+                    print(
+                        f"   Optimised temperature: {calibration_temperature:.4f} "
+                        f"(loss={loss:.6f}, iterations={iterations})"
+                    )
+
+                    if calibration_path is not None:
+                        calibration_result = TemperatureCalibrationResult(
+                            temperature=calibration_temperature,
+                            loss=float(loss),
+                            iterations=int(iterations),
+                            holdout_size=len(holdout_df),
+                            wll_before=float(metrics_before['WLL']),
+                            wll_after=float(metrics_after['WLL']),
+                            ap_before=float(metrics_before['AP']),
+                            ap_after=float(metrics_after['AP']),
+                        )
+                        calibration_result.save(calibration_path)
+                        print(f"   Calibration summary saved to {calibration_path}")
+
+                del calibration_model
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        except Exception as exc:
+            print(f"   ⚠️  Temperature scaling failed: {exc}")
+            calibration_temperature = None
+
+if calibration_temperature is None and calibration_path is not None:
     if calibration_path.exists():
         try:
             with calibration_path.open('r', encoding='utf-8') as calibration_file:
@@ -112,6 +256,16 @@ if calibration_path_str:
             f"\n   ℹ️  Calibration file not found at {calibration_path}; "
             "skipping temperature scaling."
         )
+
+ensemble_models = load_models(
+    model_paths=fold_model_paths,
+    numeric_cols=numeric_cols,
+    categorical_info=categorical_info,
+    device=device,
+)
+
+# GPU 메모리 정리
+torch.cuda.empty_cache()
 
 # 3. Running inference
 print(f"\n3. Running ensemble inference...")
@@ -221,7 +375,7 @@ else:
 
 # 5. 제출 파일 생성
 os.makedirs(CFG['OUTPUT_PATH'], exist_ok=True)
-submission_filename = "dcn_submission0930.csv"
+submission_filename = "dcn_submission1001.csv"
 submission_path = os.path.join(CFG['OUTPUT_PATH'], submission_filename)
 submission = create_submission(
     test_preds=ensemble_preds,

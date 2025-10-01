@@ -19,22 +19,45 @@ def load_model(model_path, numeric_cols, categorical_info, device):
         'cardinalities': [],
         'embedding_dims': [],
     }
+
+    state = torch.load(model_path, map_location=device)
+    state_dict = state.get('state_dict') if isinstance(state, dict) and 'state_dict' in state else state
+
+    cross_low_rank = 32
+    cross_num_experts = 4
+    cross_layers = 4
+
+    sample_key = 'cross_net.layers.0.U'
+    if sample_key in state_dict:
+        tensor = state_dict[sample_key]
+        cross_num_experts = tensor.shape[0]
+        cross_low_rank = tensor.shape[-1]
+
+        prefix = 'cross_net.layers.'
+        cross_layers = len(
+            {
+                key.split('.')[2]
+                for key in state_dict
+                if key.startswith(prefix) and key.endswith('.U')
+            }
+        )
+
     model = DCNModelV3(
         num_numeric_features=len(numeric_cols),
         categorical_cardinalities=categorical_info.get('cardinalities', []),
         embedding_dims=categorical_info.get('embedding_dims', []),
         lstm_hidden=64,
-        cross_layers=4,
+        cross_layers=cross_layers,
         deep_hidden=[768, 512, 256, 128],
         dropout=0.25,
         embedding_dropout=0.05,
-        cross_num_experts=4,
-        cross_low_rank=32,
+        cross_num_experts=cross_num_experts,
+        cross_low_rank=cross_low_rank,
         cross_gating_hidden=128,
         cross_dropout=0.1,
     ).to(device)
 
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.load_state_dict(state_dict)
     model.eval()
 
     return model

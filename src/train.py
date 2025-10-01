@@ -170,7 +170,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
         dropout=0.25,
         embedding_dropout=0.05,
         cross_num_experts=4,
-        cross_low_rank=32,
+        cross_low_rank=64,#16,#32 
         cross_gating_hidden=128,
         cross_dropout=0.1,
     ).to(device)
@@ -184,7 +184,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
     best_val_score = float("-inf")
     best_model_state = None
     patience_counter = 0
-    early_stopping_patience = 15
+    early_stopping_patience = 5
 
     fold_results = []
 
@@ -283,10 +283,16 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
                     preds=preds_binary.tolist(),
                     class_names=class_names,
                 )
+
+                # wandb.plot.pr_curve expects class-probability columns per label
+                probas_2d = np.stack(
+                    [1.0 - val_preds_arr, val_preds_arr],
+                    axis=1,
+                ).astype(float)
                 pr_curve = wandb.plot.pr_curve(
                     y_true=val_targets_arr.astype(int).tolist(),
-                    y_probas=val_preds_arr.tolist(),
-                    labels=['click'],
+                    y_probas=probas_2d.tolist(),
+                    labels=class_names,
                 )
                 wandb_run.log({
                     'val_confusion_matrix': cm_plot,
@@ -496,17 +502,42 @@ def load_best_kfold_model(numeric_cols, categorical_info, best_fold_path, device
         'embedding_dims': [],
         'unique_counts': [],
     }
-    model = DCNModelEnhanced(
+    state = torch.load(best_fold_path, map_location=device)
+    state_dict = state.get('state_dict') if isinstance(state, dict) and 'state_dict' in state else state
+
+    cross_low_rank = 32
+    cross_num_experts = 4
+    cross_layers = 4
+
+    sample_key = 'cross_net.layers.0.U'
+    if sample_key in state_dict:
+        tensor = state_dict[sample_key]
+        cross_num_experts = tensor.shape[0]
+        cross_low_rank = tensor.shape[-1]
+
+        prefix = 'cross_net.layers.'
+        cross_layers = len(
+            {
+                key.split('.')[2]
+                for key in state_dict
+                if key.startswith(prefix) and key.endswith('.U')
+            }
+        )
+
+    model = DCNModelV3(
         num_numeric_features=len(numeric_cols),
         categorical_cardinalities=categorical_info.get('cardinalities', []),
         embedding_dims=categorical_info.get('embedding_dims', []),
         lstm_hidden=64,
-        cross_layers=3,
-        deep_hidden=[512, 256, 128, 64],
-        dropout=0.3,
+        cross_layers=cross_layers,
+        deep_hidden=[768, 512, 256, 128],
+        dropout=0.25,
         embedding_dropout=0.05,
-        use_enhanced_cross=True
+        cross_num_experts=cross_num_experts,
+        cross_low_rank=cross_low_rank,
+        cross_gating_hidden=128,
+        cross_dropout=0.1,
     ).to(device)
 
-    model.load_state_dict(torch.load(best_fold_path, map_location=device))
+    model.load_state_dict(state_dict)
     return model

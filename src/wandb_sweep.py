@@ -36,19 +36,23 @@ SWEEP_CONFIG = {
 }
 
 CORRECTED_SWEEP_CONFIG = {
-    'method': 'grid',
+    'method': 'random',
     'metric': {'name': 'val_final', 'goal': 'maximize'},
     'parameters': {
         # 원래 좋았던 0.008을 중심으로 범위 확장
-        'learning_rate': {'values': [0.005, 0.008, 0.01]}, # 0.012
+        'learning_rate': {
+            'distribution': 'log_uniform',
+            'min': 5e-4,  # 낮은 값으로 안정성 테스트
+            'max': 2e-3   # 높은 값으로 초기 학습 속도 ↑
+        },
         
         # batch_size와 learning_rate의 조합 고려
-        'batch_size': {'values': [1024, 2048, 4096]}, #512
+        'batch_size': {'values': [2048, 4096]}, #512
         
         # margin은 중요하다고 확인되었으므로 유지
-        'margin': {'values': [1.0, 1.5, 2.0]},
+        'margin': {'values': [0.7, 1.0]},
         
-        'alpha': {'values': [0.7, 0.8]}
+        'alpha': {'values': [0.8, 0.85, 0.9]}
     },
     'program': 'src/wandb_sweep.py' 
 }

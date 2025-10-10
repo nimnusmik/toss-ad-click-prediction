@@ -262,6 +262,8 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
 
         scheduler.step(val_metrics['Final_Score'])
 
+        current_lrs = [group['lr'] for group in optimizer.param_groups]
+
         global_epoch_step = global_epoch_offset + epoch
 
         if use_wandb and (epoch % wandb_log_every == 0):
@@ -302,6 +304,11 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
                 print(f"  ⚠️  W&B visualization logging failed at epoch {epoch}: {exc}")
 
         print(f"[Fold {fold_num} Epoch {epoch}]")
+        if len(current_lrs) == 1:
+            print(f"  Current LR: {current_lrs[0]:.6g}")
+        else:
+            lr_values = ", ".join(f"{lr:.6g}" for lr in current_lrs)
+            print(f"  Current LRs: {lr_values}")
         print(
             f"  Train - Loss: {train_loss:.4f}, AP: {train_metrics['AP']:.4f}, "
             f"WLL: {train_metrics['WLL']:.4f}, Final: {train_metrics['Final_Score']:.4f}"

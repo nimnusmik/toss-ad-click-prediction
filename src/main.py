@@ -123,8 +123,8 @@ kfold_results = train_dcn_kfold(
     lr= CFG['LEARNING_RATE'],
 
     device=device,
-    alpha=0.7,  #0.7->0.6->0.7->0.5->0.7
-    margin=1.5, #1.0->1.5->1.0->1.5
+    alpha=0.8,  #0.7->0.6->0.7->0.5->0.7
+    margin=0.7, #1.0->1.5->1.0->1.5
     random_state=42,
 
     checkpoint_dir=CFG['CHECKPOINT_DIR'],
@@ -375,7 +375,7 @@ else:
 
 # 5. 제출 파일 생성
 os.makedirs(CFG['OUTPUT_PATH'], exist_ok=True)
-submission_filename = "dcn_submission1001.csv"
+submission_filename = "dcn_submission1002.csv"
 submission_path = os.path.join(CFG['OUTPUT_PATH'], submission_filename)
 submission = create_submission(
     test_preds=ensemble_preds,

@@ -68,7 +68,7 @@ Recommended pre-processing steps:
 1. **Exploratory analysis** (`notebooks/EDA.ipynb`): Understand distributions, time-based drift, and key drivers of clicks.
 2. **Baseline modelling** (`notebooks/baseline.ipynb`): Establish a quick benchmark (e.g., logistic regression, LightGBM) to anchor future gains.
 3. **Feature engineering & training** (`src/train.ipynb`, `src/model.ipynb`): Iterate on feature pipelines, manage train/validation splits, and perform cross-validation.
-4. **Evaluation** (`src/evaluate.ipynb`): Track metrics such as ROC-AUC, PR-AUC, log-loss, and calibration plots. Persist experiment metadata (e.g., via MLflow) for comparability.
+4. **Evaluation** (`src/evaluate.ipynb`): Calculate AP and WLL to match the leaderboard scoring rule, and keep supporting diagnostics (calibration plots, confusion summaries). Persist experiment metadata (e.g., via MLflow) for comparability.
 5. **Inference** (`src/inference.ipynb`): Prepare batch/online inference logic, include post-processing like score clipping or calibration.
 
 Automate the above with `make` or lightweight scripts once the notebooks stabilise.
@@ -80,8 +80,9 @@ Automate the above with `make` or lightweight scripts once the notebooks stabili
 - **Online serving**: Export trained models to ONNX or TorchScript, or wrap them behind a FastAPI microservice for real-time scoring.
 
 ## Evaluation Strategy
-- **Primary metric**: ROC-AUC for overall ranking quality.
-- **Secondary metrics**: PR-AUC for rare positive rates, log-loss for probability quality, calibration curves for interpretability.
+- **Leaderboard score**: `score = 0.5 * AP + 0.5 * (1 / (1 + WLL))`. Higher AP (Average Precision) and lower WLL (Weighted LogLoss) drive better scores.
+- **Average Precision (AP)**: Calculated on predicted probabilities; measures precision at every threshold and averages across the full recall range.
+- **Weighted LogLoss (WLL)**: Logarithmic loss computed with class weights adjusted so `clicked=0` and `clicked=1` contribute equally (50:50).
 - **Business KPIs**: Simulate expected revenue uplift (e.g., CPC × predicted CTR) and monitor false positive costs.
 - **Experiment tracking**: Consider integrating MLflow/Weights & Biases. Record dataset versions, feature sets, hyperparameters, and seeds.
 

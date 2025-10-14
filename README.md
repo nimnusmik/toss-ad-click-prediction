@@ -87,6 +87,8 @@ Automate the above with `make` or lightweight scripts once the notebooks stabili
 - **Experiment tracking**: Consider integrating MLflow/Weights & Biases. Record dataset versions, feature sets, hyperparameters, and seeds.
 
 ## Project Status & Next Steps
+<img width="607" height="169" alt="Screenshot 2025-10-14 at 14 42 34" src="https://github.com/user-attachments/assets/e902bd46-9a95-46c3-95f5-c204ad24b9ed" />
+
 - **Status**: Repository scaffold prepared; awaiting dataset integration and baseline implementation.
 - **Immediate actions**:
   - Populate `requirements.txt` with the libraries chosen during experimentation.

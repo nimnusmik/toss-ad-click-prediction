@@ -109,6 +109,45 @@ if CFG.get('USE_WANDB', False):
             'categorical_features': len(categorical_info.get('columns', [])),
         },
     }
+model_arch_kwargs = {
+    'lstm_hidden_size': CFG.get('LSTM_HIDDEN_SIZE', 64),
+    'deep_hidden_dims': CFG.get('DEEP_HIDDEN_DIMS'),
+    'cross_layers': CFG.get('CROSS_LAYERS', 4),
+    'cross_num_experts': CFG.get('CROSS_NUM_EXPERTS', 4),
+    'cross_low_rank': CFG.get('CROSS_LOW_RANK', 64),
+    'cross_gating_hidden': CFG.get('CROSS_GATING_HIDDEN', 128),
+    'cross_dropout': CFG.get('CROSS_DROPOUT', 0.1),
+    'model_dropout': CFG.get('MODEL_DROPOUT', 0.25),
+    'embedding_dropout': CFG.get('EMBEDDING_DROPOUT', 0.05),
+}
+stability_kwargs = {
+    'use_amp': CFG.get('USE_AMP', False),
+    'amp_dtype': CFG.get('AMP_DTYPE', 'float16'),
+    'ema_enabled': CFG.get('EMA_ENABLED', False),
+    'ema_decay': CFG.get('EMA_DECAY', 0.999),
+}
+scheduler_kwargs = {
+    'warmup_epochs': CFG.get('LR_WARMUP_EPOCHS', 0),
+    'warmup_start_factor': CFG.get('LR_WARMUP_START_FACTOR', 0.1),
+    'cosine_t0': CFG.get('COSINE_T0', max(1, CFG['EPOCHS'] // 3 or 1)),
+    'cosine_t_mult': CFG.get('COSINE_T_MULT', 1),
+    'cosine_eta_min': CFG.get('COSINE_MIN_LR', 1e-6),
+}
+model_build_kwargs = {
+    'lstm_hidden': model_arch_kwargs['lstm_hidden_size'],
+    'cross_layers': model_arch_kwargs['cross_layers'],
+    'cross_num_experts': model_arch_kwargs['cross_num_experts'],
+    'cross_low_rank': model_arch_kwargs['cross_low_rank'],
+    'cross_gating_hidden': model_arch_kwargs['cross_gating_hidden'],
+    'cross_dropout': model_arch_kwargs['cross_dropout'],
+    'dropout': model_arch_kwargs['model_dropout'],
+    'embedding_dropout': model_arch_kwargs['embedding_dropout'],
+}
+deep_hidden_dims_cfg = model_arch_kwargs['deep_hidden_dims']
+if deep_hidden_dims_cfg is not None:
+    model_build_kwargs['deep_hidden'] = deep_hidden_dims_cfg
+
+
 
 kfold_results = train_dcn_kfold(
     train_df=train_df,
@@ -129,6 +168,9 @@ kfold_results = train_dcn_kfold(
 
     checkpoint_dir=CFG['CHECKPOINT_DIR'],
     log_dir=CFG['LOG_DIR'],
+    **stability_kwargs,
+    **model_arch_kwargs,
+    **scheduler_kwargs,
     **wandb_kwargs,
 )
 
@@ -179,6 +221,7 @@ if CFG.get('CALIBRATION_ENABLED', True):
                     categorical_info=categorical_info,
                     best_fold_path=str(best_model_path),
                     device=device,
+                    **model_arch_kwargs,
                 )
 
                 logits, targets = _collect_logits(calibration_model, holdout_loader)
@@ -262,6 +305,7 @@ ensemble_models = load_models(
     numeric_cols=numeric_cols,
     categorical_info=categorical_info,
     device=device,
+    model_kwargs=model_build_kwargs,
 )
 
 # GPU 메모리 정리

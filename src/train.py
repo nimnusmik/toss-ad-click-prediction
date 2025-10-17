@@ -1,7 +1,9 @@
 import copy
 import os
 import shutil
+from contextlib import nullcontext
 import torch
+from torch.cuda.amp import autocast, GradScaler
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -21,6 +23,85 @@ try:
     import wandb
 except ImportError:
     wandb = None
+
+
+class ExponentialMovingAverage:
+    """Maintain an exponential moving average of model parameters."""
+
+    def __init__(self, model: nn.Module, decay: float) -> None:
+        self.decay = decay
+        self.ema_model = copy.deepcopy(model)
+        self.ema_model.eval()
+        for param in self.ema_model.parameters():
+            param.requires_grad_(False)
+
+    def to(self, device):
+        self.ema_model.to(device)
+
+    def update(self, model: nn.Module) -> None:
+        with torch.no_grad():
+            for ema_param, param in zip(self.ema_model.parameters(), model.parameters()):
+                ema_param.mul_(self.decay).add_(param.detach(), alpha=1.0 - self.decay)
+            for ema_buffer, buffer in zip(self.ema_model.buffers(), model.buffers()):
+                ema_buffer.copy_(buffer.detach())
+
+    def state_dict(self):
+        return self.ema_model.state_dict()
+
+
+class WarmupCosineScheduler:
+    """Linear warmup followed by cosine annealing warm restarts."""
+
+    def __init__(
+        self,
+        optimizer: torch.optim.Optimizer,
+        warmup_epochs: int = 0,
+        start_factor: float = 0.1,
+        cosine_t0: int = 10,
+        cosine_t_mult: int = 1,
+        eta_min: float = 1e-6,
+    ) -> None:
+        self.optimizer = optimizer
+        self.warmup_epochs = max(int(warmup_epochs), 0)
+        self.start_factor = max(float(start_factor), 0.0)
+        self.base_lrs = [group['lr'] for group in optimizer.param_groups]
+        self.epoch = 0
+        self.cosine_epoch = 0.0
+        self.cosine = None
+        self.cosine_t0 = max(int(cosine_t0), 1)
+        self.cosine_t_mult = max(int(cosine_t_mult), 1)
+        self.eta_min = float(eta_min)
+
+        if self.warmup_epochs > 0:
+            for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
+                group['lr'] = base_lr * self.start_factor
+
+    def step(self) -> None:
+        if self.epoch < self.warmup_epochs:
+            self.epoch += 1
+            progress = self.epoch / max(self.warmup_epochs, 1)
+            factor = self.start_factor + (1.0 - self.start_factor) * progress
+            for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
+                group['lr'] = base_lr * factor
+            return
+
+        if self.cosine is None:
+            for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
+                group['lr'] = base_lr
+            self.cosine = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                self.optimizer,
+                T_0=self.cosine_t0,
+                T_mult=self.cosine_t_mult,
+                eta_min=self.eta_min,
+            )
+            self.cosine_epoch = 0.0
+
+        self.cosine.step(self.cosine_epoch)
+        self.cosine_epoch += 1.0
+        self.epoch += 1
+
+    def get_last_lr(self) -> list[float]:
+        return [group['lr'] for group in self.optimizer.param_groups]
 
 
 def weighted_binary_crossentropy(y_true, y_pred, weights):
@@ -62,10 +143,46 @@ def combined_loss(y_true, y_pred, alpha=0.7, margin=1.0):
     total_loss = alpha * wll + (1 - alpha) * ranking
     return total_loss
 
-def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_col, target_col,
-                     batch_size=512, epochs=10, lr=1e-3, device="cuda", alpha=0.7, margin=1.0,
-                     checkpoint_dir=None, categorical_info=None, wandb_run=None, wandb_log_every=1,
-                     wandb_viz_every=5, confusion_threshold=0.5, global_epoch_offset=0):
+def train_single_fold(
+    fold_num,
+    train_idx,
+    val_idx,
+    train_df,
+    numeric_cols,
+    seq_col,
+    target_col,
+    batch_size=512,
+    epochs=10,
+    lr=1e-3,
+    device="cuda",
+    alpha=0.7,
+    margin=1.0,
+    checkpoint_dir=None,
+    categorical_info=None,
+    wandb_run=None,
+    wandb_log_every=1,
+    wandb_viz_every=5,
+    confusion_threshold=0.5,
+    global_epoch_offset=0,
+    use_amp=False,
+    amp_dtype='float16',
+    ema_enabled=False,
+    ema_decay=0.999,
+    lstm_hidden_size=64,
+    deep_hidden_dims=None,
+    cross_layers=4,
+    cross_num_experts=4,
+    cross_low_rank=64,
+    cross_gating_hidden=128,
+    cross_dropout=0.1,
+    model_dropout=0.25,
+    embedding_dropout=0.05,
+    warmup_epochs=0,
+    warmup_start_factor=0.1,
+    cosine_t0=10,
+    cosine_t_mult=1,
+    cosine_eta_min=1e-6,
+):
     """단일 fold 훈련 함수"""
 
     categorical_info = categorical_info or {
@@ -79,7 +196,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
     use_wandb = wandb_run is not None and wandb is not None
     class_names = ['no_click', 'click']
 
-    print(f"\n{'='*20} FOLD {fold_num} {'='*20}")
+    print(f"\n{'=' * 20} FOLD {fold_num} {'=' * 20}")
 
     tr_df = train_df.iloc[train_idx].reset_index(drop=True)
     va_df = train_df.iloc[val_idx].reset_index(drop=True)
@@ -125,63 +242,55 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
     num_numeric_features = len(numeric_cols)
     cat_cardinalities = categorical_info.get('cardinalities', [])
     embedding_dims = categorical_info.get('embedding_dims', [])
+    deep_hidden_dims = deep_hidden_dims or [768, 512, 256, 128]
 
-    # 1. 기본 DCN
-    #model = DCNModel(
-    #    num_numeric_features=num_numeric_features,
-    #    categorical_cardinalities=cat_cardinalities,
-    #    embedding_dims=embedding_dims,
-    #    lstm_hidden=64,
-    #    cross_layers=4, #6 #3
-    #    deep_hidden=[512, 256, 128], # [512, 256, 128], [512, 256, 128, 64]
-    #    dropout=0.3,
-    #    embedding_dropout=0.05,
-    #).to(device)
-    
-    # 2. 향상된 Cross Network 사용
-    # model = DCNModelEnhanced(
-    #     num_numeric_features=num_numeric_features,
-    #     categorical_cardinalities=cat_cardinalities,
-    #     embedding_dims=embedding_dims,
-    #     cross_layers=3,
-    #     deep_hidden=[512, 256, 128, 64],
-    #     use_enhanced_cross=True  # 향상된 Cross Network
-    # ).to(device)
-    
-    # 3. Multi-head Cross Network 사용
-    # model = DCNModelEnhanced(
-    #     num_numeric_features=num_numeric_features,
-    #     categorical_cardinalities=cat_cardinalities,
-    #     embedding_dims=embedding_dims,
-    #     cross_layers=4,
-    #     deep_hidden=[512, 256, 128, 64],
-    #     use_multi_head=True,     # Multi-head 사용
-    #     num_cross_heads=3
-    # )
-    
-    # 4. DCN v3 (default)
     model = DCNModelV3(
         num_numeric_features=num_numeric_features,
         categorical_cardinalities=cat_cardinalities,
         embedding_dims=embedding_dims,
-        lstm_hidden=64,
-        cross_layers=4,
-        deep_hidden=[768, 512, 256, 128],
-        dropout=0.25,
-        embedding_dropout=0.05,
-        cross_num_experts=4,
-        cross_low_rank=64,#16,#32 
-        cross_gating_hidden=128,
-        cross_dropout=0.1,
+        lstm_hidden=lstm_hidden_size,
+        cross_layers=cross_layers,
+        deep_hidden=deep_hidden_dims,
+        dropout=model_dropout,
+        embedding_dropout=embedding_dropout,
+        cross_num_experts=cross_num_experts,
+        cross_low_rank=cross_low_rank,
+        cross_gating_hidden=cross_gating_hidden,
+        cross_dropout=cross_dropout,
     ).to(device)
 
+    ema_helper = None
+    ema_active = ema_enabled and 0.0 < ema_decay < 1.0
+    if ema_enabled and not ema_active:
+        print('⚠️  EMA disabled because EMA_DECAY must be between 0 and 1.')
+    if ema_active:
+        ema_helper = ExponentialMovingAverage(model, ema_decay)
+        ema_helper.to(device)
+
+    amp_active = use_amp and device.startswith('cuda') and torch.cuda.is_available()
+    if use_amp and not amp_active:
+        print('⚠️  AMP requested but CUDA is unavailable; using full precision.')
+    dtype_lookup = {
+        'float16': torch.float16,
+        'fp16': torch.float16,
+        'half': torch.float16,
+        'bfloat16': torch.bfloat16,
+        'bf16': torch.bfloat16,
+    }
+    amp_torch_dtype = dtype_lookup.get(str(amp_dtype).lower(), torch.float16)
+    scaler = GradScaler(enabled=amp_active)
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
-    
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', patience=3, factor=0.5
+    scheduler = WarmupCosineScheduler(
+        optimizer,
+        warmup_epochs=warmup_epochs,
+        start_factor=warmup_start_factor,
+        cosine_t0=cosine_t0,
+        cosine_t_mult=cosine_t_mult,
+        eta_min=cosine_eta_min,
     )
 
-    best_val_score = float("-inf")
+    best_val_score = float('-inf')
     best_model_state = None
     patience_counter = 0
     early_stopping_patience = 5
@@ -202,18 +311,24 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
             ys = ys.to(device)
             x_cat = x_cat.to(device) if x_cat is not None else None
 
-            optimizer.zero_grad()
-            logits = model(x_num, x_cat, seqs, seq_lens)
+            optimizer.zero_grad(set_to_none=True)
+            context = autocast(dtype=amp_torch_dtype) if amp_active else nullcontext()
+            with context:
+                logits = model(x_num, x_cat, seqs, seq_lens)
+                try:
+                    loss = combined_loss(ys.float(), logits.float(), alpha=alpha, margin=margin)
+                except Exception as exc:
+                    print(f"Combined loss failed: {exc}, falling back to BCE")
+                    loss = F.binary_cross_entropy_with_logits(logits, ys.float())
 
-            try:
-                loss = combined_loss(ys.float(), logits.float(), alpha=alpha, margin=margin)
-            except Exception as e:
-                print(f"Combined loss failed: {e}, using BCE")
-                loss = F.binary_cross_entropy_with_logits(logits, ys.float())
-
-            loss.backward()
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
+
+            if ema_helper is not None:
+                ema_helper.update(model)
 
             train_loss += loss.item() * len(ys)
 
@@ -223,9 +338,10 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
 
             train_pbar.set_postfix({'Loss': f"{loss.item():.4f}"})
 
-        train_loss /= len(train_dataset)
+        train_loss /= max(len(train_dataset), 1)
 
-        model.eval()
+        eval_model = ema_helper.ema_model if ema_helper is not None else model
+        eval_model.eval()
         val_loss = 0.0
         val_preds, val_targets = [], []
 
@@ -239,7 +355,9 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
                 ys = ys.to(device)
                 x_cat = x_cat.to(device) if x_cat is not None else None
 
-                logits = model(x_num, x_cat, seqs, seq_lens)
+                context = autocast(dtype=amp_torch_dtype) if amp_active else nullcontext()
+                with context:
+                    logits = eval_model(x_num, x_cat, seqs, seq_lens)
 
                 try:
                     loss = combined_loss(ys.float(), logits.float(), alpha=alpha, margin=margin)
@@ -250,7 +368,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
                 val_preds.extend(torch.sigmoid(logits).cpu().numpy())
                 val_targets.extend(ys.cpu().numpy())
 
-        val_loss /= len(val_dataset)
+        val_loss /= max(len(val_dataset), 1)
 
         train_targets_arr = np.array(train_targets)
         train_preds_arr = np.array(train_preds)
@@ -260,10 +378,9 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
         train_metrics = calculate_metrics(train_targets_arr, train_preds_arr)
         val_metrics = calculate_metrics(val_targets_arr, val_preds_arr)
 
-        scheduler.step(val_metrics['Final_Score'])
+        scheduler.step()
 
         current_lrs = [group['lr'] for group in optimizer.param_groups]
-
         global_epoch_step = global_epoch_offset + epoch
 
         if use_wandb and (epoch % wandb_log_every == 0):
@@ -274,6 +391,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
                 'val_wll': float(val_metrics['WLL']),
                 'val_final': float(val_metrics['Final_Score']),
                 'val_auc': float(val_metrics['AUC']) if not np.isnan(val_metrics['AUC']) else float('nan'),
+                'lr': float(current_lrs[0]),
             }, step=global_epoch_step)
 
         if use_wandb and wandb_viz_every and (epoch % wandb_viz_every == 0):
@@ -286,7 +404,6 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
                     class_names=class_names,
                 )
 
-                # wandb.plot.pr_curve expects class-probability columns per label
                 probas_2d = np.stack(
                     [1.0 - val_preds_arr, val_preds_arr],
                     axis=1,
@@ -307,7 +424,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
         if len(current_lrs) == 1:
             print(f"  Current LR: {current_lrs[0]:.6g}")
         else:
-            lr_values = ", ".join(f"{lr:.6g}" for lr in current_lrs)
+            lr_values = ", ".join(f"{val:.6g}" for val in current_lrs)
             print(f"  Current LRs: {lr_values}")
         print(
             f"  Train - Loss: {train_loss:.4f}, AP: {train_metrics['AP']:.4f}, "
@@ -320,7 +437,7 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
 
         if val_metrics['Final_Score'] > best_val_score:
             best_val_score = val_metrics['Final_Score']
-            best_model_state = copy.deepcopy(model.state_dict())
+            best_model_state = copy.deepcopy(eval_model.state_dict())
             patience_counter = 0
             print(f"  ★ New best score for fold {fold_num}: {best_val_score:.4f}")
         else:
@@ -343,11 +460,11 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
             break
 
     if checkpoint_dir is None:
-        raise ValueError("checkpoint_dir must be provided when saving model checkpoints")
+        raise ValueError('checkpoint_dir must be provided when saving model checkpoints')
 
     fold_model_path = os.path.join(checkpoint_dir, f'best_dcn_model_fold_{fold_num}.pth')
     if best_model_state is None:
-        raise RuntimeError("best_model_state is None; ensure at least one validation score was recorded")
+        raise RuntimeError('best_model_state is None; ensure at least one validation score was recorded')
     torch.save(best_model_state, fold_model_path)
 
     return {
@@ -357,22 +474,61 @@ def train_single_fold(fold_num, train_idx, val_idx, train_df, numeric_cols, seq_
         'fold_results': fold_results
     }
 
-def train_dcn_kfold(train_df, numeric_cols, categorical_info, seq_col, target_col, 
-                   n_folds=5, batch_size=512, epochs=10, lr=1e-3, device="cuda", 
-                   alpha=0.7, margin=1.0, random_state=42, checkpoint_dir=None, log_dir=None,
-                   wandb_run=None, use_wandb=False, wandb_project=None, wandb_run_name=None,
-                   wandb_config=None, wandb_log_every=1, wandb_viz_every=5,
-                   confusion_threshold=0.5):
-    """
-    K-Fold Cross Validation으로 DCN 모델 훈련
-    
-    Args:
-        n_folds: fold 개수 (불균형 데이터에서는 3-5 추천)
-        기타 파라미터는 기존과 동일
-    """
-    
+def train_dcn_kfold(
+    train_df,
+    numeric_cols,
+    categorical_info,
+    seq_col,
+    target_col,
+    n_folds=5,
+    batch_size=512,
+    epochs=10,
+    lr=1e-3,
+    device="cuda",
+    alpha=0.7,
+    margin=1.0,
+    random_state=42,
+    checkpoint_dir=None,
+    log_dir=None,
+    wandb_run=None,
+    use_wandb=False,
+    wandb_project=None,
+    wandb_run_name=None,
+    wandb_config=None,
+    wandb_log_every=1,
+    wandb_viz_every=5,
+    confusion_threshold=0.5,
+    use_amp=False,
+    amp_dtype='float16',
+    ema_enabled=False,
+    ema_decay=0.999,
+    lstm_hidden_size=64,
+    deep_hidden_dims=None,
+    cross_layers=4,
+    cross_num_experts=4,
+    cross_low_rank=64,
+    cross_gating_hidden=128,
+    cross_dropout=0.1,
+    model_dropout=0.25,
+    embedding_dropout=0.05,
+    warmup_epochs=0,
+    warmup_start_factor=0.1,
+    cosine_t0=10,
+    cosine_t_mult=1,
+    cosine_eta_min=1e-6,
+):
+    """K-Fold Cross Validation으로 DCN 모델 훈련"""
+
     if (use_wandb or wandb_run is not None) and wandb is None:
         raise ImportError('wandb is required for logging but is not installed.')
+
+    deep_hidden_config = deep_hidden_dims or [768, 512, 256, 128]
+    amp_active = use_amp and device.startswith('cuda') and torch.cuda.is_available()
+    if use_amp and not amp_active:
+        print('⚠️  AMP requested but CUDA is unavailable; using full precision.')
+    ema_active = ema_enabled and 0.0 < ema_decay < 1.0
+    if ema_enabled and not ema_active:
+        print('⚠️  EMA disabled because EMA_DECAY must be between 0 and 1.')
 
     run_config = {
         'batch_size': batch_size,
@@ -381,6 +537,24 @@ def train_dcn_kfold(train_df, numeric_cols, categorical_info, seq_col, target_co
         'alpha': alpha,
         'margin': margin,
         'n_folds': n_folds,
+        'use_amp': amp_active,
+        'amp_dtype': amp_dtype,
+        'ema_enabled': ema_active,
+        'ema_decay': ema_decay,
+        'lstm_hidden_size': lstm_hidden_size,
+        'deep_hidden_dims': deep_hidden_config,
+        'cross_layers': cross_layers,
+        'cross_num_experts': cross_num_experts,
+        'cross_low_rank': cross_low_rank,
+        'cross_gating_hidden': cross_gating_hidden,
+        'cross_dropout': cross_dropout,
+        'model_dropout': model_dropout,
+        'embedding_dropout': embedding_dropout,
+        'warmup_epochs': warmup_epochs,
+        'warmup_start_factor': warmup_start_factor,
+        'cosine_t0': cosine_t0,
+        'cosine_t_mult': cosine_t_mult,
+        'cosine_eta_min': cosine_eta_min,
     }
     if wandb_config:
         run_config.update(wandb_config)
@@ -396,8 +570,8 @@ def train_dcn_kfold(train_df, numeric_cols, categorical_info, seq_col, target_co
     print(f"📊 Dataset: {len(train_df)} samples")
     print(f"📈 Overall click rate: {train_df[target_col].mean():.4f}")
     print(f"⚖️  Combined Loss - Alpha: {alpha}, Margin: {margin}")
-    print("-" * 80)
-    
+    print('-' * 80)
+
     if checkpoint_dir is None:
         checkpoint_dir = './'
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -405,15 +579,12 @@ def train_dcn_kfold(train_df, numeric_cols, categorical_info, seq_col, target_co
     if log_dir is not None:
         os.makedirs(log_dir, exist_ok=True)
 
-    # StratifiedKFold로 불균형 데이터 처리
     skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
-    
+
     fold_results = []
     all_fold_metrics = []
-    
-    # K-Fold 훈련
+
     for fold_num, (train_idx, val_idx) in enumerate(skf.split(train_df, train_df[target_col]), 1):
-        
         fold_result = train_single_fold(
             fold_num=fold_num,
             train_idx=train_idx,
@@ -435,33 +606,49 @@ def train_dcn_kfold(train_df, numeric_cols, categorical_info, seq_col, target_co
             wandb_viz_every=wandb_viz_every,
             confusion_threshold=confusion_threshold,
             global_epoch_offset=(fold_num - 1) * epochs,
+            use_amp=amp_active,
+            amp_dtype=amp_dtype,
+            ema_enabled=ema_active,
+            ema_decay=ema_decay,
+            lstm_hidden_size=lstm_hidden_size,
+            deep_hidden_dims=deep_hidden_config,
+            cross_layers=cross_layers,
+            cross_num_experts=cross_num_experts,
+            cross_low_rank=cross_low_rank,
+            cross_gating_hidden=cross_gating_hidden,
+            cross_dropout=cross_dropout,
+            model_dropout=model_dropout,
+            embedding_dropout=embedding_dropout,
+            warmup_epochs=warmup_epochs,
+            warmup_start_factor=warmup_start_factor,
+            cosine_t0=cosine_t0,
+            cosine_t_mult=cosine_t_mult,
+            cosine_eta_min=cosine_eta_min,
         )
-        
+
         fold_results.append(fold_result)
         all_fold_metrics.extend(fold_result['fold_results'])
-    
-    # 결과 요약
-    print(f"\n{'='*60}")
-    print(f"🎯 K-FOLD CROSS VALIDATION RESULTS")
-    print(f"{'='*60}")
-    
+
+    print(f"\n{'=' * 60}")
+    print('🎯 K-FOLD CROSS VALIDATION RESULTS')
+    print(f"{'=' * 60}")
+
     fold_scores = [result['best_score'] for result in fold_results]
     mean_score = np.mean(fold_scores)
     std_score = np.std(fold_scores)
-    
-    print(f"📊 Fold-wise Best Scores:")
-    for i, result in enumerate(fold_results):
+
+    print('📊 Fold-wise Best Scores:')
+    for result in fold_results:
         print(f"   Fold {result['fold']}: {result['best_score']:.4f}")
-    
-    print(f"\n📈 Overall Performance:")
+
+    print("\n📈 Overall Performance:")
     print(f"   Mean CV Score: {mean_score:.4f} ± {std_score:.4f}")
     print(f"   Min Score: {min(fold_scores):.4f}")
     print(f"   Max Score: {max(fold_scores):.4f}")
-    
-    # 베스트 모델 선택
+
     best_fold_idx = np.argmax(fold_scores)
     best_fold_result = fold_results[best_fold_idx]
-    
+
     print(f"\n🏆 Best Model: Fold {best_fold_result['fold']} (Score: {best_fold_result['best_score']:.4f})")
     print(f"📁 Best Model Path: {best_fold_result['model_path']}")
 
@@ -471,7 +658,6 @@ def train_dcn_kfold(train_df, numeric_cols, categorical_info, seq_col, target_co
         wandb_run.summary['best_fold'] = int(best_fold_result['fold'])
         wandb_run.summary['best_fold_score'] = float(best_fold_result['best_score'])
 
-    # 결과를 DataFrame으로 저장
     results_df = pd.DataFrame(all_fold_metrics)
     results_csv_path = os.path.join(log_dir, 'kfold_training_results.csv') if log_dir else 'kfold_training_results.csv'
     results_df.to_csv(results_csv_path, index=False)
@@ -500,7 +686,21 @@ def train_dcn_kfold(train_df, numeric_cols, categorical_info, seq_col, target_co
     return output
 
 
-def load_best_kfold_model(numeric_cols, categorical_info, best_fold_path, device="cuda"):
+def load_best_kfold_model(
+    numeric_cols,
+    categorical_info,
+    best_fold_path,
+    device="cuda",
+    lstm_hidden_size=64,
+    deep_hidden_dims=None,
+    cross_layers=4,
+    cross_num_experts=4,
+    cross_low_rank=64,
+    cross_gating_hidden=128,
+    cross_dropout=0.1,
+    model_dropout=0.25,
+    embedding_dropout=0.05,
+):
     """베스트 K-Fold 모델 로드"""
     categorical_info = categorical_info or {
         'columns': [],
@@ -511,12 +711,41 @@ def load_best_kfold_model(numeric_cols, categorical_info, best_fold_path, device
     }
     state = torch.load(best_fold_path, map_location=device)
     state_dict = state.get('state_dict') if isinstance(state, dict) and 'state_dict' in state else state
-
-    cross_low_rank = 32
-    cross_num_experts = 4
-    cross_layers = 4
-
     sample_key = 'cross_net.layers.0.U'
+    if sample_key in state_dict:
+        tensor = state_dict[sample_key]
+        cross_num_experts = tensor.shape[0]
+        cross_low_rank = tensor.shape[-1]
+        prefix = 'cross_net.layers.'
+        cross_layers = len(
+            {
+                key.split('.')[2]
+                for key in state_dict
+                if key.startswith(prefix) and key.endswith('.U')
+            }
+        )
+
+    deep_hidden = deep_hidden_dims or [768, 512, 256, 128]
+
+    model = DCNModelV3(
+        num_numeric_features=len(numeric_cols),
+        categorical_cardinalities=categorical_info.get('cardinalities', []),
+        embedding_dims=categorical_info.get('embedding_dims', []),
+        lstm_hidden=lstm_hidden_size,
+        cross_layers=cross_layers,
+        deep_hidden=deep_hidden,
+        dropout=model_dropout,
+        embedding_dropout=embedding_dropout,
+        cross_num_experts=cross_num_experts,
+        cross_low_rank=cross_low_rank,
+        cross_gating_hidden=cross_gating_hidden,
+        cross_dropout=cross_dropout,
+    ).to(device)
+
+    model.load_state_dict(state_dict)
+    model.eval()
+    return model
+
     if sample_key in state_dict:
         tensor = state_dict[sample_key]
         cross_num_experts = tensor.shape[0]

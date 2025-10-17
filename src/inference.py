@@ -12,7 +12,7 @@ from model import DCNModel, DCNModelEnhanced, DCNModelV3
 from data_loader import ClickDataset, collate_fn_infer
 
 
-def load_model(model_path, numeric_cols, categorical_info, device):
+def load_model(model_path, numeric_cols, categorical_info, device, model_kwargs=None):
     """저장된 모델 로드"""
     categorical_info = categorical_info or {
         'columns': [],
@@ -23,18 +23,26 @@ def load_model(model_path, numeric_cols, categorical_info, device):
     state = torch.load(model_path, map_location=device)
     state_dict = state.get('state_dict') if isinstance(state, dict) and 'state_dict' in state else state
 
-    cross_low_rank = 32
-    cross_num_experts = 4
-    cross_layers = 4
+    defaults = {
+        'lstm_hidden': 64,
+        'deep_hidden': [768, 512, 256, 128],
+        'dropout': 0.25,
+        'embedding_dropout': 0.05,
+        'cross_layers': 4,
+        'cross_num_experts': 4,
+        'cross_low_rank': 64,
+        'cross_gating_hidden': 128,
+        'cross_dropout': 0.1,
+    }
+    build_kwargs = {**defaults, **(model_kwargs or {})}
 
     sample_key = 'cross_net.layers.0.U'
     if sample_key in state_dict:
         tensor = state_dict[sample_key]
-        cross_num_experts = tensor.shape[0]
-        cross_low_rank = tensor.shape[-1]
-
+        build_kwargs['cross_num_experts'] = tensor.shape[0]
+        build_kwargs['cross_low_rank'] = tensor.shape[-1]
         prefix = 'cross_net.layers.'
-        cross_layers = len(
+        build_kwargs['cross_layers'] = len(
             {
                 key.split('.')[2]
                 for key in state_dict
@@ -42,19 +50,14 @@ def load_model(model_path, numeric_cols, categorical_info, device):
             }
         )
 
+    if build_kwargs.get('deep_hidden') is None:
+        build_kwargs['deep_hidden'] = defaults['deep_hidden']
+
     model = DCNModelV3(
         num_numeric_features=len(numeric_cols),
         categorical_cardinalities=categorical_info.get('cardinalities', []),
         embedding_dims=categorical_info.get('embedding_dims', []),
-        lstm_hidden=64,
-        cross_layers=cross_layers,
-        deep_hidden=[768, 512, 256, 128],
-        dropout=0.25,
-        embedding_dropout=0.05,
-        cross_num_experts=cross_num_experts,
-        cross_low_rank=cross_low_rank,
-        cross_gating_hidden=128,
-        cross_dropout=0.1,
+        **build_kwargs,
     ).to(device)
 
     model.load_state_dict(state_dict)
@@ -63,7 +66,7 @@ def load_model(model_path, numeric_cols, categorical_info, device):
     return model
 
 
-def load_models(model_paths, numeric_cols, categorical_info, device):
+def load_models(model_paths, numeric_cols, categorical_info, device, model_kwargs=None):
     """Load multiple fold models for ensemble inference."""
     if not model_paths:
         raise ValueError("model_paths must contain at least one checkpoint path")
@@ -72,7 +75,7 @@ def load_models(model_paths, numeric_cols, categorical_info, device):
     for path in model_paths:
         if not os.path.exists(path):
             raise FileNotFoundError(f"Model checkpoint not found: {path}")
-        models.append(load_model(path, numeric_cols, categorical_info, device))
+        models.append(load_model(path, numeric_cols, categorical_info, device, model_kwargs=model_kwargs))
 
     return models
 

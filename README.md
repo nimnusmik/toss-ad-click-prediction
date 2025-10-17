@@ -20,6 +20,13 @@
 
 현재 버전은 깔끔한 프로젝트 레이아웃, 템플릿 노트북, 파이프라인 확장 가이드를 제공합니다. 의도적으로 가볍게 설계하여 자체 로그 데이터를 연결하고 빠르게 반복 실험할 수 있습니다.
 
+## 프로젝트 현황 및 향후 계획
+
+약 700개가 넘는 팀 중 상위 10% 랭크
+
+<img width="607" height="169" alt="Screenshot 2025-10-14 at 14 42 34" src="https://github.com/user-attachments/assets/e902bd46-9a95-46c3-95f5-c204ad24b9ed" />
+
+
 ## 저장소 구조
 
 ```
@@ -137,61 +144,20 @@ score = 0.5 × AP + 0.5 × (1 / (1 + WLL))
 - 클래스 가중치 조정 로그 손실
 - `clicked=0`과 `clicked=1`이 동등하게 기여 (50:50)
 
-### 비즈니스 KPI
-- 예상 수익 증가 시뮬레이션 (CPC × 예측 CTR)
-- False Positive 비용 모니터링
-
 ### 실험 추적
 - MLflow/Weights & Biases 통합 권장
 - 데이터셋 버전, 특성 세트, 하이퍼파라미터, 시드 기록
-
-## 프로젝트 현황 및 향후 계획
-
-<img width="607" height="169" alt="Screenshot 2025-10-14 at 14 42 34" src="https://github.com/user-attachments/assets/e902bd46-9a95-46c3-95f5-c204ad24b9ed" />
-
-### 현재 상태
-- 저장소 기본 구조 완성
-- 데이터셋 통합 및 베이스라인 구현 대기 중
-
-### 즉시 실행 항목
-1. 실험 중 선택한 라이브러리로 `requirements.txt` 작성
-2. EDA 및 베이스라인 노트북에 실제 분석 내용 작성
-3. 학습 스크립트 구현 (`src/train.ipynb` → `.py`)
-4. `artifacts/` 폴더 생성 후 학습된 모델 저장
-
-### 확장 목표
-- **CI 루틴 구축**: nbQA, black으로 노트북 린트, 내보낸 코드 유닛 테스트
-- **Docker 컨테이너화**: 재현 가능한 배포를 위한 파이프라인 컨테이너화
-- **모니터링 대시보드**: 프로덕션 추론 드리프트 감지 대시보드 추가
-
-## 기여 방법
-
-Pull Request 및 Issue를 환영합니다.
-
-**기여 가이드라인**
-1. 계획한 변경 사항을 설명하는 Issue 생성
-2. Feature-branch 워크플로우 사용, 집중된 커밋 유지
-3. PR 설명에 재현성 정보 포함 (데이터셋 버전, 랜덤 시드)
-
-## 라이선스
-
-본 프로젝트는 [MIT License](LICENSE) 하에 배포됩니다.
 
 ---
 
 ## 기술 스택 요약
 
 **언어**: Python 3.10+  
-**주요 라이브러리** (예상):
+**주요 라이브러리** :
 - 데이터 처리: Pandas, NumPy
-- 모델링: Scikit-learn, LightGBM, XGBoost, PyTorch
-- 실험 추적: MLflow, Weights & Biases
-- 추론: ONNX Runtime, FastAPI
+- 모델링: Scikit-learn
+- 실험 추적:  Weights & Biases
 
-**인프라** (확장 시):
-- 컨테이너: Docker
-- 오케스트레이션: Kubernetes
-- 모니터링: Prometheus, Grafana
 
 ## 참고 자료
 

@@ -47,18 +47,71 @@
 - **사용 모델**: DCN-v3
 
 ---
+# Toss 광고 클릭 예측 파이프라인
+
+Toss 디지털 광고 캠페인의 클릭 여부를 예측하기 위한 엔드투엔드 파이프라인입니다. `src/main.py`가 전처리 → 학습 → 추론을 순차 실행하며, 실험 반복과 배포까지 재현 가능한 형태로 구성되어 있습니다. 대규모 익명 로그를 안정적으로 다루기 위해 데이터 핸들링, 모델 학습, 모니터링 모듈을 분리했습니다.
+
+## 주요 특징
+- **DCN-v3 기반 CTR 모델**: Deep & Cross Network v3로 고차 상호작용을 학습하고, 필요 시 전통 ML 베이스라인과 비교 실험을 수행합니다.
+- **Polars 전처리 파이프라인**: `src/preprocess/` 모듈이 청크 단위로 데이터를 읽어 파생 특성을 생성하고 `data/processed/`에 저장합니다.
+- **실험 추적과 온도 보정**: Weights & Biases로 학습 로그를 기록하고, 추론 단계에서 온도 보정(Temperature Scaling)으로 예측 확률을 교정합니다.
+- **평가 지표 대응**: 대회 점수 산식인 `0.5 × AP + 0.5 × (1 / (1 + WLL))`를 기준으로 모델을 조율합니다.
+
+## 시작하기
+### 1. 개발 환경 준비
+```bash
+python3 -m venv toss-ml-venv
+source toss-ml-venv/bin/activate
+pip install -r requirements.txt
+```
+CUDA 11.8 이상의 GPU 환경을 권장하지만, GPU가 없다면 자동으로 CPU로 폴백합니다.
+
+### 2. 데이터 준비
+- 원본 파케이 데이터는 `data/` 아래에 두고, 가공된 피처는 `data/processed/`에 저장합니다.
+- 학습 전 `data/processed/train_processed_2.parquet`, `data/processed/test_processed_2.parquet` 존재 여부를 확인하세요. 없다면 아래 전처리 스크립트를 실행합니다.
+
+```bash
+python src/preprocess/preprocess.py
+```
+
+### 3. 핵심 명령어
+- 학습: `python src/train.py` (스모크 테스트 시 `config.CFG["EPOCHS"] = 1` 설정)
+- 평가: `python src/evaluate.py` (모델 출력과 지표 계산)
+- 추론 및 제출 생성: `python src/inference.py`
+- 통합 파이프라인: `python src/main.py` → `data/output/`에 제출 CSV 작성
 
 ## 저장소 구조
-
 ```
 .
-├── data/                  # 외부 데이터셋 저장 (버전 관리 제외)
-├── notebooks/             # 탐색적 분석 및 기준 모델 실험
-├── src/                   # 핵심 워크플로우를 위한 프로덕션급 노트북/스크립트
-├── requirements.txt       # Python 의존성 (프로젝트 진행에 따라 업데이트)
-├── LICENSE                # MIT 라이선스
-└── README.md              # 프로젝트 문서
+├── data/              # 원본 데이터 (버전 관리 제외)
+├── data/processed/    # 전처리된 특성 저장 위치
+├── data/output/       # 모델 아티팩트와 제출 파일
+├── notebooks/         # 탐색적 분석 및 실험용 노트북
+├── src/               # 프로덕션 파이프라인 코드
+│   ├── preprocess/    # 전처리 및 피처 엔지니어링 모듈
+│   ├── train.py       # K-Fold 학습 루프
+│   ├── evaluate.py    # AP, WLL 계산 및 시각화
+│   ├── inference.py   # 추론 파이프라인 및 보정
+│   └── main.py        # 전체 워크플로 orchestration 스크립트
+└── tests/             # pytest 케이스 (필요 시 추가)
 ```
+
+## 파이프라인 개요
+1. **전처리 (`src/preprocess/`)**: 범주형 정수 인코딩, 시간 주기성(cyclic) 특징, 시퀀스 통계, 상호작용 피처를 생성합니다.
+2. **데이터 로더 (`src/data_loader.py`)**: Polars DataFrame을 PyTorch `Dataset`으로 변환하고 배치 샘플링 전략을 제어합니다.
+3. **모델 학습 (`src/train.py`)**: K-폴드 교차 검증을 수행하고 EMA, AMP, 코사인 스케줄러로 안정적 학습을 보장합니다. 학습 기록은 W&B에 남기고 체크포인트는 `models/`에 저장합니다.
+4. **평가 (`src/evaluate.py`)**: AP, WLL, Calibration Curve를 계산하며, 최적 임계값 탐색을 지원합니다.
+5. **추론 (`src/inference.py`)**: 최적 모델 가중치와 온도 보정 파라미터를 불러와 최종 예측 확률을 계산하여 CSV를 생성합니다.
+
+## 설정 관리 (`src/config.py`)
+- 모든 하이퍼파라미터는 `config.CFG` 딕셔너리에서 관리합니다.
+- `CFG["DATA_PATH"]`, `CFG["OUTPUT_PATH"]`, `CFG["CHECKPOINT_DIR"]` 등 경로 관련 설정을 환경에 맞게 조정할 수 있습니다.
+- `CFG["USE_WANDB"]`를 `False`로 두면 W&B 로깅을 비활성화합니다.
+
+## 모델 및 실험 관리
+- **모델 구성**: 임베딩 드롭아웃, 다층 퍼셉트론(Deep Tower), Cross Network, 시퀀스 LSTM을 조합합니다.
+- **스케줄러**: 워ーム업 후 코사인 애널링 스케줄을 적용하며, EMA로 가중치를 스무딩합니다.
+- **캘리브레이션**: `src/calibrate/`에서 온도 보정 모델을 저장하고, 추론 시 `CFG["CALIBRATION_ENABLED"]` 플래그로 제어합니다.
 
 ### 주요 파일
 - `notebooks/EDA.ipynb`: 원시 노출/클릭 로그의 탐색적 데이터 분석 템플릿

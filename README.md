@@ -37,30 +37,6 @@
 - `notebooks/baseline.ipynb`: 로지스틱 회귀 또는 트리 기반 모델로 빠른 베이스라인 구축
 - `src/train.ipynb`, `src/model.ipynb`, `src/inference.ipynb`, `src/evaluate.ipynb`: 워크플로우 안정화 시 스크립트로 내보낼 구조화된 노트북
 
-## 시작하기
-
-**1. 저장소 클론**
-```bash
-git clone https://github.com/<your-username>/toss-ad-click-prediction.git
-cd toss-ad-click-prediction
-```
-
-**2. Python 환경 생성** (Conda 예시)
-```bash
-conda create -n toss-ctr python=3.10
-conda activate toss-ctr
-```
-
-**3. 의존성 설치** (`requirements.txt` 작성 후)
-```bash
-pip install -r requirements.txt
-```
-
-**4. Jupyter Lab 실행**
-```bash
-jupyter lab
-```
-
 ## 데이터 준비
 
 ### 데이터 소스
